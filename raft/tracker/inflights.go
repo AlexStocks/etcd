@@ -19,6 +19,12 @@ package tracker
 // use Full() to check whether more messages can be sent, call Add() whenever
 // they are sending a new append, and release "quota" via FreeLE() whenever an
 // ack is received.
+//
+// 一个漏桶限流算法实现。发送消息前，先调用 Full() 检测是否溢出，发送完毕则调用 Add() 向
+// 池子入水，调用 FreeLE() 从池子里出水。
+//
+// 这个漏桶限流算法使用了 RingBuffer 作为队列, start 标识队列起始位置，count 标识
+// buffer 的 element size。
 type Inflights struct {
 	// the starting index in the buffer
 	start int
@@ -34,6 +40,7 @@ type Inflights struct {
 }
 
 // NewInflights sets up an Inflights that allows up to 'size' inflight messages.
+// 初始时，并没有给 buffer 申请到内存空间，而是在使用过程中【如 @Add 中】动态扩容
 func NewInflights(size int) *Inflights {
 	return &Inflights{
 		size: size,
@@ -52,6 +59,8 @@ func (in *Inflights) Clone() *Inflights {
 // dispatched. Full() must be called prior to Add() to verify that there is room
 // for one more message, and consecutive calls to add Add() must provide a
 // monotonic sequence of indexes.
+//
+// @inflight 记录已经发给 follower 的最后的日志的 index。
 func (in *Inflights) Add(inflight uint64) {
 	if in.Full() {
 		panic("cannot add into a Full inflights")
@@ -61,7 +70,7 @@ func (in *Inflights) Add(inflight uint64) {
 	if next >= size {
 		next -= size
 	}
-	if next >= len(in.buffer) {
+	if next >= len(in.buffer) { // next 位置超过 buffer 的容量，则扩容 buffer
 		in.grow()
 	}
 	in.buffer[next] = inflight
@@ -84,15 +93,18 @@ func (in *Inflights) grow() {
 }
 
 // FreeLE frees the inflights smaller or equal to the given `to` flight.
+// 把 index 小于等于 @to 的日志都释放掉。因为 raft 日志是有序的，follower 回复消费到了
+// 某个 index，则说明 index 以前的消息都被消费掉了，所以需要把 index 之前的都出水。
 func (in *Inflights) FreeLE(to uint64) {
 	if in.count == 0 || to < in.buffer[in.start] {
 		// out of the left side of the window
 		return
 	}
 
-	idx := in.start
+	idx := in.start //  真正的游标
 	var i int
 	for i = 0; i < in.count; i++ {
+		// 寻找第一个 index 比 @to 大的 idx
 		if to < in.buffer[idx] { // found the first large inflight
 			break
 		}
@@ -109,6 +121,8 @@ func (in *Inflights) FreeLE(to uint64) {
 	if in.count == 0 {
 		// inflights is empty, reset the start index so that we don't grow the
 		// buffer unnecessarily.
+		//
+		// count 为零，队列为空，把 start 位置调整为 0
 		in.start = 0
 	}
 }

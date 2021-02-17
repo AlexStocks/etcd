@@ -53,39 +53,50 @@ type Ready struct {
 	// The current volatile state of a Node.
 	// SoftState will be nil if there is no update.
 	// It is not required to consume or store SoftState.
+	// 包括自身的 role、leader ID
+	// nil代表软状态没有变化
 	*SoftState
 
 	// The current state of a Node to be saved to stable storage BEFORE
 	// Messages are sent.
 	// HardState will be equal to empty state if there is no update.
+	// 包括了 term、commit、vote 等值
+	// 这些值会被持久化到磁盘上，所以称之为 hard state
 	pb.HardState
 
 	// ReadStates can be used for node to serve linearizable read requests locally
 	// when its applied index is greater than the index in ReadState.
 	// Note that the readState will be returned when raft receives msgReadIndex.
 	// The returned is only valid for the request that requested to read.
+	// Node.ReadIndex() 的回调，是某一个时刻的集群最大提交索引。
 	ReadStates []ReadState
 
 	// Entries specifies entries to be saved to stable storage BEFORE
 	// Messages are sent.
+	// 待被存入可靠存储的 message，来自 log.unstable
 	Entries []pb.Entry
 
 	// Snapshot specifies the snapshot to be saved to stable storage.
+	// 待被存储的快照，来自 log.unstable
 	Snapshot pb.Snapshot
 
 	// CommittedEntries specifies entries to be committed to a
 	// store/state-machine. These have previously been committed to stable
 	// store.
+	// 已经提交有待被 applied 的日志，
 	CommittedEntries []pb.Entry
 
 	// Messages specifies outbound messages to be sent AFTER Entries are
 	// committed to stable storage.
 	// If it contains a MsgSnap message, the application MUST report back to raft
 	// when the snapshot has been received or has failed by calling ReportSnapshot.
+	// 待被同步给其他 node 的message
 	Messages []pb.Message
 
 	// MustSync indicates whether the HardState and Entries must be synchronously
 	// written to disk or if an asynchronous write is permissible.
+	// 指示了 hardstate、unstable entry 是否必须同步写入磁盘，如果为否则异步写入即可
+	// 如果为 true，则必须同步成功调用 Advance()
 	MustSync bool
 }
 
@@ -123,14 +134,29 @@ func (rd Ready) appliedCursor() uint64 {
 }
 
 // Node represents a node in a raft cluster.
+//
+// 这里面存储了如下系列的函数：
+// 竞选： Campaign
+// 向集群提交：Propose() + ProposeConfChange()
+// raft：
+//   * 向 raft 提交日志 Step()
+//   * 从 raft 获取已经提交的数据 Ready()
+//   * 告诉 raft 已经处理完毕一批数据 Advance()
 type Node interface {
 	// Tick increments the internal logical clock for the Node by a single tick. Election
 	// timeouts and heartbeat timeouts are in units of ticks.
+	// raft 算法自身没有计时器，其计时是由这个接口驱动的，每调用一次内部计数一次。raft 内部计时有 心跳 和 选举 两种。
 	Tick()
 	// Campaign causes the Node to transition to candidate state and start campaigning to become leader.
+	// 把 node 状态转换为 candidate 状态，并开始发起选举
 	Campaign(ctx context.Context) error
 	// Propose proposes that data be appended to the log. Note that proposals can be lost without
 	// notice, therefore it is user's job to ensure proposal retries.
+	// 把 data 广播给其他 follower，如果当前 node 不是 leader，则会把数据数据发送到 leader。
+    //
+	// 需要注意：该函数虽然返回错误代码，但是返回nil不代表data已经被超过半数节点接收了。因为提议
+	// 是一个异步的过程，该接口的返回值只能表示提议这个操作是否被允许，比如在没有选出Leader的情况下
+	// 是无法提议的。而提议的数据被超过半数的节点接受是通过下面的Ready()获取的。
 	Propose(ctx context.Context, data []byte) error
 	// ProposeConfChange proposes a configuration change. Like any proposal, the
 	// configuration change may be dropped with or without an error being
@@ -144,9 +170,11 @@ type Node interface {
 	// message is only allowed if all Nodes participating in the cluster run a
 	// version of this library aware of the V2 API. See pb.ConfChangeV2 for
 	// usage details and semantics.
+	// 提交 raft 集群配置数据
 	ProposeConfChange(ctx context.Context, cc pb.ConfChangeI) error
 
 	// Step advances the state machine using the given message. ctx.Err() will be returned, if any.
+	// 把数据传输给 raft
 	Step(ctx context.Context, msg pb.Message) error
 
 	// Ready returns a channel that returns the current point-in-time state.
@@ -154,6 +182,8 @@ type Node interface {
 	//
 	// NOTE: No committed entries from the next Ready may be applied until all committed entries
 	// and snapshots from the previous one have finished.
+	// node 从这个接口获取 commited 数据，把一些数据应用起来，从 commited 转换为 applied。相当于数据会先被
+	// Propose 提交，然后再通过这个函数返回的 chan 通道获取响应值。
 	Ready() <-chan Ready
 
 	// Advance notifies the Node that the application has saved progress up to the last Ready.
@@ -165,6 +195,9 @@ type Node interface {
 	// commands. For example. when the last Ready contains a snapshot, the application might take
 	// a long time to apply the snapshot data. To continue receiving Ready without blocking raft
 	// progress, it can call Advance before finishing applying the last ready.
+	//
+	// 通过这个接口告诉 raft，其已经处理完毕 Ready() <-chan Ready 返回的数据，raft 收到 Advance() 接口里面的
+	// 发来的通知后，才会通过 <- chan Ready 发来下一批数据，否则 Node 会阻塞在 <- chan Ready 这个通道上。
 	Advance()
 	// ApplyConfChange applies a config change (previously passed to
 	// ProposeConfChange) to the node. This must be called whenever a config
@@ -172,18 +205,24 @@ type Node interface {
 	//
 	// Returns an opaque non-nil ConfState protobuf which must be recorded in
 	// snapshots.
+	//
+	// ProposeConfChange() 应用最新的 raft 集群配置。
 	ApplyConfChange(cc pb.ConfChangeI) *pb.ConfState
 
 	// TransferLeadership attempts to transfer leadership to the given transferee.
+	// 把 leader 转移到 transferee
 	TransferLeadership(ctx context.Context, lead, transferee uint64)
 
 	// ReadIndex request a read state. The read state will be set in the ready.
 	// Read state has a read index. Once the application advances further than the read
 	// index, any linearizable read requests issued before the read request can be
 	// processed safely. The read state will have the same rctx attached.
+	//
+	// 获取当前集群最大的提交索引。
 	ReadIndex(ctx context.Context, rctx []byte) error
 
 	// Status returns the current status of the raft state machine.
+	// 获取 raft 状态。
 	Status() Status
 	// ReportUnreachable reports the given node is not reachable for the last send.
 	ReportUnreachable(id uint64)
@@ -197,8 +236,11 @@ type Node interface {
 	// updates from the leader. Therefore, it is crucial that the application ensures that any
 	// failure in snapshot sending is caught and reported back to the leader; so it can resume raft
 	// log probing in the follower.
+	// 向 raft 报告向某个 follower 发送 快照成功与否。只有快照发送成功，leader raft 才会向 follower 发送
+	// 后续 log entry，否则就会啥也不做。
 	ReportSnapshot(id uint64, status SnapshotStatus)
 	// Stop performs any necessary termination of the Node.
+	// 停止 raft 运转。
 	Stop()
 }
 
@@ -248,15 +290,24 @@ type msgWithResult struct {
 
 // node is the canonical implementation of the Node interface
 type node struct {
+	// Propose()
 	propc      chan msgWithResult
+	// Step()
 	recvc      chan pb.Message
+	// ApplyConfChange()
 	confc      chan pb.ConfChangeV2
 	confstatec chan pb.ConfState
+	// Ready()
 	readyc     chan Ready
+	// Advance()
 	advancec   chan struct{}
+	// Tick()
 	tickc      chan struct{}
+	// Stop()
 	done       chan struct{}
+	// Stop()
 	stop       chan struct{}
+	// Status()
 	status     chan chan Status
 
 	rn *RawNode

@@ -31,13 +31,17 @@ type Status struct {
 
 // BasicStatus contains basic information about the Raft peer. It does not allocate.
 type BasicStatus struct {
+	// node ID
 	ID uint64
 
+	// term，vote，和 commit 索引 etc
 	pb.HardState
+	// 存储了 node 的 role，leader 的 ID
 	SoftState
 
+	// 应用索引
 	Applied uint64
-
+	// 应用转移目标的ID
 	LeadTransferee uint64
 }
 

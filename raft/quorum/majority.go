@@ -123,11 +123,14 @@ func insertionSort(sl []uint64) {
 
 // CommittedIndex computes the committed index from those supplied via the
 // provided AckedIndexer (for the active config).
+// AckedIndexer == matchAckIndexer，@l 可以提供所有节点的 Progress.Match
 func (c MajorityConfig) CommittedIndex(l AckedIndexer) Index {
 	n := len(c)
 	if n == 0 {
 		// This plays well with joint quorums which, when one half is the zero
 		// MajorityConfig, should behave like the other half.
+		//
+		// 当没有 peer 的时候，返回值为无穷大。此处不能返回 0，否则 JointConfig 中比较时，会永远返回零。
 		return math.MaxUint64
 	}
 
@@ -138,7 +141,9 @@ func (c MajorityConfig) CommittedIndex(l AckedIndexer) Index {
 	// replication factor of >7 is rare, and in cases in which it happens
 	// performance is a lesser concern (additionally the performance
 	// implications of an allocation here are far from drastic).
-	var stk [7]uint64
+	//
+	// 此处使用了一个小技巧，事实上 node 个数一般不会大于 7，所以尽量使用栈，以利于快速释放内存
+	var stk [7]uint64 // 诚如其名称，stack 数组
 	var srt []uint64
 	if len(stk) >= n {
 		srt = stk[:n]
@@ -151,6 +156,8 @@ func (c MajorityConfig) CommittedIndex(l AckedIndexer) Index {
 		// left as zero; these correspond to voters that may report in, but
 		// haven't yet. We fill from the right (since the zeroes will end up on
 		// the left after sorting below anyway).
+		//
+		// 把所有回复的 index 都存入 stk 数组
 		i := n - 1
 		for id := range c {
 			if idx, ok := l.AckedIndex(id); ok {
@@ -162,11 +169,13 @@ func (c MajorityConfig) CommittedIndex(l AckedIndexer) Index {
 
 	// Sort by index. Use a bespoke algorithm (copied from the stdlib's sort
 	// package) to keep srt on the stack.
+	// 插入排序
 	insertionSort(srt)
 
 	// The smallest index into the array for which the value is acked by a
 	// quorum. In other words, from the end of the slice, move n/2+1 to the
 	// left (accounting for zero-indexing).
+	// 中位数即为绝大多数 peer 都认同的 index，可以作为集群的 committed index
 	pos := n - (n/2 + 1)
 	return Index(srt[pos])
 }
@@ -175,11 +184,15 @@ func (c MajorityConfig) CommittedIndex(l AckedIndexer) Index {
 // a result indicating whether the vote is pending (i.e. neither a quorum of
 // yes/no has been reached), won (a quorum of yes has been reached), or lost (a
 // quorum of no has been reached).
+//
+// 对投票结果进行唱票的函数，@votes 存储了投票结果
 func (c MajorityConfig) VoteResult(votes map[uint64]bool) VoteResult {
 	if len(c) == 0 {
 		// By convention, the elections on an empty config win. This comes in
 		// handy with joint quorums because it'll make a half-populated joint
 		// quorum behave like a majority quorum.
+		//
+		// 无人投票，则获胜
 		return VoteWon
 	}
 

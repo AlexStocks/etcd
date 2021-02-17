@@ -31,8 +31,13 @@ var ErrStepPeerNotFound = errors.New("raft: cannot step as peer not found")
 // RawNode is a thread-unsafe Node.
 // The methods of this struct correspond to the methods of Node and are described
 // more fully there.
+//
+// 大体可以认为 RawNode 是对 raft 的包装，把 raft run 起来，只不过它的各个接口函数不是线
+// 程安全的，需要进一步包装
 type RawNode struct {
+	// 包装了 raft
 	raft       *raft
+	// 最后一次的可靠状态
 	prevSoftSt *SoftState
 	prevHardSt pb.HardState
 }

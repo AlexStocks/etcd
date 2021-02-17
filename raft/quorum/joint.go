@@ -16,6 +16,8 @@ package quorum
 
 // JointConfig is a configuration of two groups of (possibly overlapping)
 // majority configurations. Decisions require the support of both majorities.
+//
+// 其函数接口和 MajorityConfig 一致，其结果是对两组投票结果的比较，取值较小者。
 type JointConfig [2]MajorityConfig
 
 func (c JointConfig) String() string {
@@ -27,6 +29,8 @@ func (c JointConfig) String() string {
 
 // IDs returns a newly initialized map representing the set of voters present
 // in the joint configuration.
+//
+// 返回整体集群各个 peer 的 ID
 func (c JointConfig) IDs() map[uint64]struct{} {
 	m := map[uint64]struct{}{}
 	for _, cc := range c {

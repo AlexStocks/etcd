@@ -505,6 +505,8 @@ func (r *raft) maybeSendAppend(to uint64, sendIfEmpty bool) bool {
 }
 
 // sendHeartbeat sends a heartbeat RPC to the given peer.
+// 发送出去的心跳消息中， commit 取值 min{Progress[to].match, raftLog.committed}，
+// follower 收到的心跳消息中的 commit 值不能大于 follower 上报的 match 值
 func (r *raft) sendHeartbeat(to uint64, ctx []byte) {
 	// Attach the commit as min(to.matched, r.committed).
 	// When the leader sends out heartbeat message,

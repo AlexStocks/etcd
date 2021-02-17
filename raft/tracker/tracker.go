@@ -116,11 +116,11 @@ func (c *Config) Clone() Config {
 // index for each peer which in turn allows reasoning about the committed index.
 type ProgressTracker struct {
 	Config
-
+    // 所有的 peer 的 Progress
 	Progress ProgressMap
 
 	Votes map[uint64]bool
-
+	// Inflights 的容量
 	MaxInflight int
 }
 
@@ -164,6 +164,9 @@ type matchAckIndexer map[uint64]*Progress
 var _ quorum.AckedIndexer = matchAckIndexer(nil)
 
 // AckedIndex implements IndexLookuper.
+//
+// 获取 @id follower 的回复的 match ID
+// 本质是对 map 的封装，原因是 map 直接读取结果时，需要确认 key 的 value 是否存在
 func (l matchAckIndexer) AckedIndex(id uint64) (quorum.Index, bool) {
 	pr, ok := l[id]
 	if !ok {
@@ -174,6 +177,11 @@ func (l matchAckIndexer) AckedIndex(id uint64) (quorum.Index, bool) {
 
 // Committed returns the largest log index known to be committed based on what
 // the voting members of the group have acknowledged.
+//
+// 根据各个 follower 返回的 match 结果计算集群的 committed 值。
+// 这里只计算了 follower 作为 voter 的投票结果，不计算 learner[looker] 的结果。
+//
+// 另外，p.Progress 类型和 matchAckIndexer 类型一致，所以可以强行转换
 func (p *ProgressTracker) Committed() uint64 {
 	return uint64(p.Voters.CommittedIndex(matchAckIndexer(p.Progress)))
 }
@@ -257,7 +265,7 @@ func (p *ProgressTracker) ResetVotes() {
 // instance if v == true (and declined it otherwise).
 func (p *ProgressTracker) RecordVote(id uint64, v bool) {
 	_, ok := p.Votes[id]
-	if !ok {
+	if !ok { // 先前没有给 @id 投过票，才会记录下投票值 @v
 		p.Votes[id] = v
 	}
 }

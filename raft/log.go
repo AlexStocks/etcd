@@ -23,24 +23,35 @@ import (
 
 type raftLog struct {
 	// storage contains all stable entries since the last snapshot.
+	// 存储了 snapshot 以及其后的所有的 stable log entry，可以认为是持久化日志的内存缓存。
+	// raft 访问过去的可靠日志都是到这个接口中查找获取。
 	storage Storage
 
 	// unstable contains all unstable entries and snapshot.
 	// they will be saved into storage.
+	// 所有还未被持久化的 log entry 都在这里。日志持久化之前都存储在这里，持久化的数据会被
+	// 存储到其他稳定的存储目标以及 raftLog.storage 中。
 	unstable unstable
 
 	// committed is the highest log position that is known to be in
 	// stable storage on a quorum of nodes.
+	// 超过半数以上的 peer 的 raftLog.Storage 存储日志中的最大 index 值
+	// 这个值是集群状态，而非某个 node 的状态。不同 node 因为从 leader 获取
+	// 数据的速度不一样，所以这个值在同一个绝对时刻可能不一致
 	committed uint64
 	// applied is the highest log position that the application has
 	// been instructed to apply to its state machine.
 	// Invariant: applied <= committed
+	// 非集群状态数据，是一个节点状态数据。applied 值不可能大于 committed 值。
 	applied uint64
 
 	logger Logger
 
 	// maxNextEntsSize is the maximum number aggregate byte size of the messages
 	// returned from calls to nextEnts.
+	// raft 一次向 node 提供的 log entry 的数量。raftLog 有个成员函数 nextEnts()，
+	// 用于获取 (applied, committed] 之间的所有日志，这个变量用于约束一次获取日志的总量，
+	// 避免产生一次大粒度的应用操作。
 	maxNextEntsSize uint64
 }
 
@@ -86,7 +97,7 @@ func (l *raftLog) String() string {
 // maybeAppend returns (0, false) if the entries cannot be appended. Otherwise,
 // it returns (last index of new entries, true).
 func (l *raftLog) maybeAppend(index, logTerm, committed uint64, ents ...pb.Entry) (lastnewi uint64, ok bool) {
-	if l.matchTerm(index, logTerm) {
+	if l.matchTerm(index, logTerm) { // 验证 @index 的 term 是否与 @logTerm 一致
 		lastnewi = index + uint64(len(ents))
 		ci := l.findConflict(ents)
 		switch {
@@ -276,6 +287,8 @@ func (l *raftLog) allEntries() []pb.Entry {
 // later term is more up-to-date. If the logs end with the same term, then
 // whichever log has the larger lastIndex is more up-to-date. If the logs are
 // the same, the given log is up-to-date.
+//
+// check @lasti+term 是否比 raftLog 中现有的数据更新
 func (l *raftLog) isUpToDate(lasti, term uint64) bool {
 	return term > l.lastTerm() || (term == l.lastTerm() && lasti >= l.lastIndex())
 }

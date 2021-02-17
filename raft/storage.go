@@ -43,19 +43,29 @@ var ErrSnapshotTemporarilyUnavailable = errors.New("snapshot is temporarily unav
 // If any Storage method returns an error, the raft instance will
 // become inoperable and refuse to participate in elections; the
 // application is responsible for cleanup and recovery in this case.
+//
+// Storage 存储了包括最后一次 snapshot 到现在为止所有可靠的日志集合。Storage 接口
+// 返回的任何错误，都会导致 raft 停止运行，并由应用层处理相关错误
 type Storage interface {
 	// TODO(tbg): split this into two interfaces, LogStorage and StateStorage.
 
 	// InitialState returns the saved HardState and ConfState information.
+	// raft 启动的时候，需要获取系统的初始状态
+	// HardState 包括了 snapshot 的 term+index，以及vote
+	// ConfState 则包括了 集群配置 等进群信息
 	InitialState() (pb.HardState, pb.ConfState, error)
 	// Entries returns a slice of log entries in the range [lo,hi).
 	// MaxSize limits the total size of the log entries returned, but
 	// Entries returns at least one entry if any.
+	//
+	// 获取 [lo, hi) 之间的日志，日志总量限制在 maxSize [单位是Byte]
 	Entries(lo, hi, maxSize uint64) ([]pb.Entry, error)
 	// Term returns the term of entry i, which must be in the range
 	// [FirstIndex()-1, LastIndex()]. The term of the entry before
 	// FirstIndex is retained for matching purposes even though the
 	// rest of that entry may not be available.
+	//
+	// 获取 @i 的 term 值，FirstIndex()-1 <= i <= LastIndex()。
 	Term(i uint64) (uint64, error)
 	// LastIndex returns the index of the last entry in the log.
 	LastIndex() (uint64, error)
@@ -79,9 +89,13 @@ type MemoryStorage struct {
 	// goroutine.
 	sync.Mutex
 
+	// term + vote + commit
 	hardState pb.HardState
+	// 包括了日志应用后的数据以及meta
+	// meta = snapshot term + snapshot index + raft集群配置
 	snapshot  pb.Snapshot
 	// ents[i] has raft log position i+snapshot.Metadata.Index
+	// 处于 committed 状态的 log entry 集合
 	ents []pb.Entry
 }
 
@@ -89,6 +103,7 @@ type MemoryStorage struct {
 func NewMemoryStorage() *MemoryStorage {
 	return &MemoryStorage{
 		// When starting from scratch populate the list with a dummy entry at term zero.
+		// 注意此处，初始有一个空的 dummy entry
 		ents: make([]pb.Entry, 1),
 	}
 }
@@ -171,11 +186,14 @@ func (ms *MemoryStorage) Snapshot() (pb.Snapshot, error) {
 
 // ApplySnapshot overwrites the contents of this Storage object with
 // those of the given snapshot.
+// 设置 snapshot @snap，要求 snap 的 index 比 ms.snap 大，否则拒绝接收
+// 设置 ms.snap = @snap 后，再构建一个 dummy log entry
 func (ms *MemoryStorage) ApplySnapshot(snap pb.Snapshot) error {
 	ms.Lock()
 	defer ms.Unlock()
 
 	//handle check for old snapshot being applied
+	// 检测 @snap 是否比 ms.snapshot 更老
 	msIndex := ms.snapshot.Metadata.Index
 	snapIndex := snap.Metadata.Index
 	if msIndex >= snapIndex {
@@ -183,6 +201,7 @@ func (ms *MemoryStorage) ApplySnapshot(snap pb.Snapshot) error {
 	}
 
 	ms.snapshot = snap
+	// 一个 dummy log entry
 	ms.ents = []pb.Entry{{Term: snap.Metadata.Term, Index: snap.Metadata.Index}}
 	return nil
 }
@@ -191,6 +210,9 @@ func (ms *MemoryStorage) ApplySnapshot(snap pb.Snapshot) error {
 // can be used to reconstruct the state at that point.
 // If any configuration changes have been made since the last compaction,
 // the result of the last ApplyConfChange must be passed in.
+//
+// 不要被函数名称迷惑，其实是设置 snapshot：index @i，集群配置 @cs，以及 log snapshot 数据 @data
+// 然后返回封装后的 snapshot 数据
 func (ms *MemoryStorage) CreateSnapshot(i uint64, cs *pb.ConfState, data []byte) (pb.Snapshot, error) {
 	ms.Lock()
 	defer ms.Unlock()
@@ -204,6 +226,7 @@ func (ms *MemoryStorage) CreateSnapshot(i uint64, cs *pb.ConfState, data []byte)
 	}
 
 	ms.snapshot.Metadata.Index = i
+	// term 不变
 	ms.snapshot.Metadata.Term = ms.ents[i-offset].Term
 	if cs != nil {
 		ms.snapshot.Metadata.ConfState = *cs
@@ -215,6 +238,7 @@ func (ms *MemoryStorage) CreateSnapshot(i uint64, cs *pb.ConfState, data []byte)
 // Compact discards all log entries prior to compactIndex.
 // It is the application's responsibility to not attempt to compact an index
 // greater than raftLog.applied.
+// 压缩数据
 func (ms *MemoryStorage) Compact(compactIndex uint64) error {
 	ms.Lock()
 	defer ms.Unlock()
@@ -238,6 +262,7 @@ func (ms *MemoryStorage) Compact(compactIndex uint64) error {
 // Append the new entries to storage.
 // TODO (xiangli): ensure the entries are continuous and
 // entries[0].Index > ms.entries[0].Index
+// 确保 @entries 与 ms.ents 恰好能合并或者有交集，否则 @entries 非法
 func (ms *MemoryStorage) Append(entries []pb.Entry) error {
 	if len(entries) == 0 {
 		return nil
