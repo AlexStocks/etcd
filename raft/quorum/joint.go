@@ -18,6 +18,7 @@ package quorum
 // majority configurations. Decisions require the support of both majorities.
 //
 // 其函数接口和 MajorityConfig 一致，其结果是对两组投票结果的比较，取值较小者。
+// 之所以是两组投票结果，考虑的是添加或者删除的 membership change 的情况
 type JointConfig [2]MajorityConfig
 
 func (c JointConfig) String() string {
