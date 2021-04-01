@@ -117,22 +117,32 @@ func newBucketBuffer() *bucketBuffer {
 	return &bucketBuffer{buf: make([]kv, 512), used: 0}
 }
 
+// 枚举 [key, endKey) 内的 kv 对，翻页限定为 @limit
+//
+// 返回 [key, endKey) 范围内的 kv；
+// 如果 @key 找不到，则退出；
+// 如果 @endKey 为空，则返回 @key 对应的 kv；
+// 如果 endKey <= key，则返回空；
+// key < endKey，则按照翻页参数 @limit 返回相应的 kv 对。
 func (bb *bucketBuffer) Range(key, endKey []byte, limit int64) (keys [][]byte, vals [][]byte) {
 	f := func(i int) bool { return bytes.Compare(bb.buf[i].key, key) >= 0 }
+	// 找到 key 第一次出现的位置
 	idx := sort.Search(bb.used, f)
-	if idx < 0 {
+	if idx < 0 { // 没找到，则直接退出
 		return nil, nil
 	}
-	if len(endKey) == 0 {
+	if len(endKey) == 0 { // endKey 为空，则说明只取值 @key 对应的 kv
 		if bytes.Equal(key, bb.buf[idx].key) {
 			keys = append(keys, bb.buf[idx].key)
 			vals = append(vals, bb.buf[idx].val)
 		}
 		return keys, vals
 	}
+	// 如果 @endKey 小于 @key，则参数不合法，退出
 	if bytes.Compare(endKey, bb.buf[idx].key) <= 0 {
 		return nil, nil
 	}
+	// 返回 [key, endKey) 内的 kv
 	for i := idx; i < bb.used && int64(len(keys)) < limit; i++ {
 		if bytes.Compare(endKey, bb.buf[i].key) <= 0 {
 			break
@@ -167,9 +177,12 @@ func (bb *bucketBuffer) merge(bbsrc *bucketBuffer) {
 	for i := 0; i < bbsrc.used; i++ {
 		bb.add(bbsrc.buf[i].key, bbsrc.buf[i].val)
 	}
+	// bb 原来为空，直接退出即可
 	if bb.used == bbsrc.used {
 		return
 	}
+	// 比较 bb 原来最后一个 elem 与 bbsrc 的第一个 elem，如果 bb.last < bbsrc.first 则
+	// 可以保证新顺序就是有序的，不必排序退出即可
 	if bytes.Compare(bb.buf[(bb.used-bbsrc.used)-1].key, bbsrc.buf[0].key) < 0 {
 		return
 	}
@@ -177,9 +190,11 @@ func (bb *bucketBuffer) merge(bbsrc *bucketBuffer) {
 	sort.Stable(bb)
 
 	// remove duplicates, using only newest update
+	// 去重
 	widx := 0
 	for ridx := 1; ridx < bb.used; ridx++ {
 		if !bytes.Equal(bb.buf[ridx].key, bb.buf[widx].key) {
+			// 举个栗子，初始 widx 为 0，ridx 为 1，如果前后两个 idx 不相等，则 widx 自增后也为 1
 			widx++
 		}
 		bb.buf[widx] = bb.buf[ridx]
