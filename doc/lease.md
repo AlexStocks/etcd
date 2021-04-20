@@ -21,7 +21,7 @@ Lease 租约。
   	// mu protects concurrent accesses to itemSet
   	mu      sync.RWMutex
   	itemSet map[LeaseItem]struct{} // 跟这个 Lease 绑定的所有 kv 的 key 的集合
-  	revokec chan struct{}
+  	revokec chan struct{} // Lease 被撤销时，会关闭此通道，从而实现监听效果
   }
 
   // 查看其是否过期
@@ -85,7 +85,10 @@ etcd 时钟是一个时间小顶堆，在堆顶存放着即将过期的 LeaseWit
 
 ## 3 Lessor
 
-lessor 出租方，lessee 承租方。
+翻译：lessor 出租方，lessee 承租方。
+lessor 就是 lease 的管理方，lessee 则是各个 kv。 
+
+lessor 每次处理顶多处理 500 个过期 lease，防止瞬间过多的 lease 过期，导致 server 忙于处理过期 kv 而无法响应外部响应。 
 
 ```go
   // Lessor 拥有 lease【租约】，可以用于授权、销毁、重新续租和修改 [grant/revoke/renew/modify] 承租方 [lessee] 的 lease。
@@ -146,12 +149,10 @@ lessor 出租方，lessee 承租方。
 
 ### 3.1 lessor
 
-lessor 实现了接口 Lessor。
+lessor 实现了接口 Lessor, 管理所有的 lease，实现过期 kv 检查与 checkpoint 检查。
 
 ```go
   type lessor struct {
-	mu sync.RWMutex
-
     //  如果 lessor 是主 lessor，则创建该 channel。否则关闭它。 
 	demotec chan struct{}
     // map: lease id -> lease  
@@ -167,6 +168,7 @@ lessor 实现了接口 Lessor。
 	rd RangeDeleter
 
     // 当发生 leader 选举和重启时，一个 lease 应当被固化到 bolt 中，lessor 会使用下面的 @cp 对 lease 进行检测。  
+    // leaseCheckpointHeap 中的数据会执行 Checkpointer 方法
 	cp Checkpointer
 
     // lease 存储点。这里面只存储 lease ID 及其从当前时间开始的过期时间。
@@ -176,6 +178,7 @@ lessor 实现了接口 Lessor。
     // 最小 lease ttl。
 	minLeaseTTL int64
 
+    // 过期的 lease 写入此 channel，等待被 EtcdServer 调用处理。
 	expiredC chan []*Lease
     // stopC 用于标记 lessor 将要停止。
 	stopC chan struct{}
@@ -198,6 +201,7 @@ lessor 实现了接口 Lessor。
   func (le *lessor) findExpiredLeases(limit int) []*Lease 
 
   // lessor 创建时就会启动一个 runLoop 异步 goroutine，每个 500ms 检测超时的 lease，然后把超时的 lease 返回。
+  // 检查过期的 lease 和 checkpoint lease
   func (le *lessor) runLoop() {
 	defer close(le.doneC)
 
@@ -226,9 +230,32 @@ lessor 实现了接口 Lessor。
   // 调用 expireExists，返回固定数目以内的的 Lease 集合  
   func (le *lessor) findExpiredLeases(limit int) []*Lease 
 
-// ok 为 true，说明获取到了过期的 Lease 
-// 如果再尝试一次，也许还能获取到新的超时 Lease，则 "next" 为 true
-func (le *lessor) expireExists() (l *Lease, ok bool, next bool) {
+  // findExpiredLeases loops leases in the leaseMap until reaching expired limit
+  // and returns the expired leases that needed to be revoked.
+  func (le *lessor) findExpiredLeases(limit int) []*Lease {
+	leases := make([]*Lease, 0, 16)
+
+	for {
+		l, ok, next := le.expireExists()
+		if !ok && !next {
+			break
+		}
+        // 确认 lease 确实超时
+		if l.expired() {
+			leases = append(leases, l)
+			// reach expired limit
+			if len(leases) == limit {
+				break
+			}
+		}
+	}
+
+	return leases
+  }
+
+  // ok 为 true，说明获取到了过期的 Lease 
+  // 如果再尝试一次，也许还能获取到新的超时 Lease，则 "next" 为 true
+  func (le *lessor) expireExists() (l *Lease, ok bool, next bool) {
     // 读取堆顶，但是不从堆所在的队列中删除它
 	item := le.leaseExpiredNotifier.Poll()
 	l = le.leaseMap[item.id]
@@ -244,35 +271,99 @@ func (le *lessor) expireExists() (l *Lease, ok bool, next bool) {
 		return l, false, false
 	}
 
-    // todo: 这里没看懂，需要后续继续分析 20210413
+    // 这里重新更新时间是为了防止机器时钟错乱
+    // 重新放入时钟堆，让这个元素不要在顶部，以便下一次收集过期元素时因为找不到对应的 lease 而被删除 
+    // 即会在上面第一个 if 逻辑段内执行删除操作
 	// recheck if revoke is complete after retry interval
 	item.time = now.Add(le.expiredLeaseRetryInterval).UnixNano()
 	le.leaseExpiredNotifier.RegisterOrUpdate(item)
 	return l, true, false
-}
+  }
+```
 
-// findExpiredLeases loops leases in the leaseMap until reaching expired limit
-// and returns the expired leases that needed to be revoked.
-func (le *lessor) findExpiredLeases(limit int) []*Lease {
-	leases := make([]*Lease, 0, 16)
+## 4 server
 
+EtcdServer 通过 lessor.ExpiredLeasesC() 函数获取超时的 lease，然后处理。
+
+```go 
+  // etcdserver/v3_server.go
+  func (s *EtcdServer) run() {
+	var expiredLeaseC <-chan []*lease.Lease
+	if s.lessor != nil {
+		expiredLeaseC = s.lessor.ExpiredLeasesC()
+	}
+			
 	for {
-		l, ok, next := le.expireExists()
-		if !ok && !next {
-			break
-		}
-        // 确认 lease 确实超时
-		if l.expired() {
-			leases = append(leases, l)
+		select {
+			case leases := <-expiredLeaseC: // 过期的 lease
+        		s.goAttach(func() {
+        			c := make(chan struct{}, maxPendingRevokes)
+        			for _, lease := range leases {
+         				lid := lease.ID
+        				s.goAttach(func() { // 撤销租约
+        					ctx := s.authStore.WithRoot(s.ctx)
+        					_, lerr := s.LeaseRevoke(ctx, &pb.LeaseRevokeRequest{ID: int64(lid)})
 
-			// reach expired limit
-			if len(leases) == limit {
-				break
-			}
+        					<-c
+        				})
+        			}
+        		})
 		}
 	}
+  }
 
-	return leases
-}
+  func (s *EtcdServer) LeaseRevoke(ctx context.Context, r *pb.LeaseRevokeRequest) (*pb.LeaseRevokeResponse, error) {
+	resp, err := s.raftRequestOnce(ctx, pb.InternalRaftRequest{LeaseRevoke: r})
+	return resp.(*pb.LeaseRevokeResponse), nil
+  }
+  func (s *EtcdServer) raftRequestOnce(ctx context.Context, r pb.InternalRaftRequest) (proto.Message, error) {
+	result, err := s.processInternalRaftRequestOnce(ctx, r)
+  }
 
+  func (s *EtcdServer) processInternalRaftRequestOnce(ctx context.Context, r pb.InternalRaftRequest) (*applyResult, error) {
+	data, err := r.Marshal()
+	err = s.r.Propose(cctx, data)
+	select {
+	case x := <-ch:
+		return x.(*applyResult), nil
+	}
+  }
 ```
+
+在 s.LeaseRevoke 中，走完整个提案流程后，才会转换为 apply 消息，被节点应用。
+server 处理过期 kv 的过程是一个完整的提案过程。
+
+```go 
+  // applyEntryNormal apples an EntryNormal type raftpb request to the EtcdServer
+  func (s *EtcdServer) applyEntryNormal(e *raftpb.Entry) {
+	var ar *applyResult
+	needResult := s.w.IsRegistered(id)
+	if needResult || !noSideEffect(&raftReq) {
+	  ar = s.applyV3.Apply(&raftReq)
+	}
+  }
+
+  // etcdserver/apply.go
+  func (a *applierV3backend) Apply(r *pb.InternalRaftRequest) *applyResult {
+	ar := &applyResult{}
+	switch {
+	case r.LeaseGrant != nil:
+		ar.resp, ar.err = a.s.applyV3.LeaseGrant(r.LeaseGrant)
+	case r.LeaseRevoke != nil:
+		ar.resp, ar.err = a.s.applyV3.LeaseRevoke(r.LeaseRevoke)
+	case r.LeaseCheckpoint != nil:
+		ar.resp, ar.err = a.s.applyV3.LeaseCheckpoint(r.LeaseCheckpoint)
+	}
+	return ar
+  }
+
+  func (a *applierV3backend) LeaseGrant(lc *pb.LeaseGrantRequest) (*pb.LeaseGrantResponse, error) {
+	l, err := a.s.lessor.Grant(lease.LeaseID(lc.ID), lc.TTL)
+	return resp, err
+  }
+
+  func (a *applierV3backend) LeaseRevoke(lc *pb.LeaseRevokeRequest) (*pb.LeaseRevokeResponse, error) {
+	err := a.s.lessor.Revoke(lease.LeaseID(lc.ID))
+	return &pb.LeaseRevokeResponse{Header: newHeader(a.s)}, err
+  }
+``` 

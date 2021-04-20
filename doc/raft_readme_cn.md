@@ -174,6 +174,14 @@ Ready 中记录了可存入 WAL 的 Entries，持久快照 Snapshot、写入状�
 
 Raft Node 可以认为是 raft 状态机的更进一步封装，提供了更高级的接口。
 
+raft、Node 与 raftNode 三者之间的关系：
+
+raft 只实现了协议，维护了一个 leader/candidate/follower 状态机。和 lease 一道驱动了 etcd 的运转。
+
+Node 作为中间层，接受提案消息，交给 raft 处理，然后将 raft 加工处理的结果再发送给 raftNode 处理。
+
+raftNode 将 raft 中的消息，应用到自身节点，如果自身是 leader，则会将消息同步给其他 follower 节点。
+
 ```go
   // raft/node.go
 

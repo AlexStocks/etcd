@@ -855,7 +855,7 @@ func (l *Lease) refresh(extend time.Duration) {
 	l.expiryMu.Lock()
 	defer l.expiryMu.Unlock()
 	l.expiry = newExpiry
-
+}
 
 // forever sets the expiry of lease to be forever.
 func (l *Lease) forever() {
