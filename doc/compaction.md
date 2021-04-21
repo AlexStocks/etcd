@@ -18,13 +18,19 @@ etcd 自身当然也可以配置 compaction，etcd 有两种 compaction 方式�
 --auto-compaction-mode='periodic' --auto-compaction-retention='10m'
 ```
 
- revision compaction 配置参数如下：
+auto-compaction-mode 为 periodic 时，它表示启⽤时间周期性压缩，auto-compactionretention 为保留的时间的周期，⽐如 1h。
+
+revision compaction 配置参数如下：
 
 ```bash
 --auto-compaction-mode='revision.' --auto-compaction-retention='10m' 
 ```
+auto-compaction-mode 为 revision 时，它表示启⽤版本号压缩模式，auto-compactionretention 为保留的历史版本号数，⽐如 10000。
+注意，etcd server 的 auto-compaction-retention 为'0'时，将关闭⾃动压缩策略，
 
-etcd 默认的 compaction 方式是 `periodic`，相关配置参见如下选项：
+etcd 默认的 compaction 方式是 `periodic`。
+
+etcd 启动时，获取 compact 类型的代码路径如下：
 
 ```go
 // etcdmain/config.go
@@ -192,6 +198,8 @@ func (pc *Periodic) Run() {
 * 3 如果上个 compact interval  执行 compact 失败，则后面每个 sleep window 内都尝试执行 compact；否则用 lastSuccess 记录上次执行成功的时间点，把 compact 时间窗口后移一个 compact interval。
 
 ## 3 Revision Compaction
+
+它⼜适⽤于什么场景呢？当你写请求⽐较多，可能产⽣⽐较多的历史版本导致 db 增⻓时，或者不确定配置 periodic 周期为多少才是最佳的时候，你可以通过设置压缩模式为 revision，指定保留的历史版本号数。⽐如你希望 etcd 尽量只保存 1 万个历史版本，那么你可以指定 compaction-mode 为 revision，auto-compaction-retention 为 10000。
 
 ```go
 // etcdserver/api/v3compactor/revision.go
@@ -438,3 +446,7 @@ func StartEtcd(inCfg *Config) (e *Etcd, err error) {
 	e.Server.Start()
 }
 ```
+
+## 5  MVCC 压缩机制
+
+![](./pic/mvcc-backend-compact.png)
