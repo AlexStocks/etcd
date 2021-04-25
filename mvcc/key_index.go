@@ -312,6 +312,7 @@ func (ki *keyIndex) findGeneration(rev int64) *generation {
 		}
 		g := ki.generations[cg]
 		if cg != lastg {
+			// tomb version 的 main version 小于 @rev，则说明本 generation 不包含 @rev
 			if tomb := g.revs[len(g.revs)-1].main; tomb <= rev {
 				return nil
 			}

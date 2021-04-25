@@ -449,4 +449,6 @@ func StartEtcd(inCfg *Config) (e *Etcd, err error) {
 
 ## 5  MVCC 压缩机制
 
-![](./pic/mvcc-backend-compact.png)
+![](../pic/mvcc-backend-compact.png)
+
+### keyINdex
