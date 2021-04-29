@@ -451,4 +451,3 @@ func StartEtcd(inCfg *Config) (e *Etcd, err error) {
 
 ![](../pic/mvcc-backend-compact.png)
 
-### keyINdex
