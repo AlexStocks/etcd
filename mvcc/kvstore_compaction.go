@@ -59,6 +59,7 @@ func (s *store) scheduleCompaction(compactMainRev int64, keep map[revision]struc
 					zap.Duration("took", time.Since(totalStart)),
 				)
 			} else {
+				time.Sleep(10e9)
 				plog.Infof("finished scheduled compaction at %d (took %v)", compactMainRev, time.Since(totalStart))
 			}
 			return true

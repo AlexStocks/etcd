@@ -67,8 +67,10 @@ func (rt *readTx) UnsafeRange(bucketName, key, endKey []byte, limit int64) ([][]
 	if limit > 1 && !bytes.Equal(bucketName, safeRangeBucket) {
 		panic("do not use unsafeRange on non-keys bucket")
 	}
+	// 先读取内存读 buffer
 	keys, vals := rt.buf.Range(bucketName, key, endKey, limit)
 	if int64(len(keys)) == limit {
+		// 如果 key 数目达到 @limit，则返回
 		return keys, vals
 	}
 
@@ -91,6 +93,8 @@ func (rt *readTx) UnsafeRange(bucketName, key, endKey []byte, limit int64) ([][]
 	rt.txMu.Lock()
 	c := bucket.Cursor()
 	rt.txMu.Unlock()
+
+	// 从磁盘读取一部分数据，
 
 	k2, v2 := unsafeRange(c, key, endKey, limit-int64(len(keys)))
 	return append(k2, keys...), append(v2, vals...)

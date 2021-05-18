@@ -291,6 +291,7 @@ func (t *batchTxBuffered) Commit() {
 	t.Unlock()
 }
 
+// 把数据刷到磁盘后，不要再创建新的事务
 func (t *batchTxBuffered) CommitAndStop() {
 	t.Lock()
 	t.commit(true)

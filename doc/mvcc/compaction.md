@@ -1,5 +1,9 @@
 # compaction
 
+对 boltdb 进行 compact 时，并不是回收磁盘空间，仅是将旧版本占⽤的空间打个空闲（Free）标记，放入 freeList，后续新的数据写⼊的时候可复⽤这块空间，⽽⽆需申请新的空间。
+
+如果你需要回收空间，减少 db ⼤⼩，得使⽤碎⽚整理（defrag）， 它会遍历旧的 db ⽂件数据，写⼊到⼀个新的 db ⽂件。但是它对服务性能有较⼤影响。 
+
 ## 1 compaction type
 
 对 k8s 集群的 etcd 进行 compaction，参照 kube-apiserver ，可以在 kube-apiserver 的启动命令中设定 compaction interval：

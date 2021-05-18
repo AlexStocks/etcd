@@ -35,6 +35,8 @@ func (txb *txBuffer) reset() {
 }
 
 // txWriteBuffer buffers writes of pending updates that have not yet committed.
+// 是否要求按照写入顺序，如果为 false，则要求 txBuffer 中的每个 bucketBuffer 按照字母顺序有序
+// 默认为 true，详见 newBatchTxBuffered 函数
 type txWriteBuffer struct {
 	txBuffer
 	seq bool
@@ -54,14 +56,17 @@ func (txw *txWriteBuffer) putSeq(bucket, k, v []byte) {
 	b.add(k, v)
 }
 
+// 把 txw 中的内容合入 txr
 func (txw *txWriteBuffer) writeback(txr *txReadBuffer) {
 	for k, wb := range txw.buckets {
+		// 如果 txw 中的 bucket 在 txr 中不存在，则把 txw 中该 bucket 删除后放入 txr 中
 		rb, ok := txr.buckets[k]
 		if !ok {
 			delete(txw.buckets, k)
 			txr.buckets[k] = wb
 			continue
 		}
+		//
 		if !txw.seq && wb.used > 1 {
 			// assume no duplicate keys
 			sort.Sort(wb)
@@ -107,6 +112,7 @@ type kv struct {
 }
 
 // bucketBuffer buffers key-value pairs that are pending commit.
+// bucketBuffer 中 kv 数目
 type bucketBuffer struct {
 	buf []kv
 	// used tracks number of elements in use so buf can be reused without reallocation.
