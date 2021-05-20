@@ -111,12 +111,18 @@ type ServerConfig struct {
 
 	BootstrapTimeout time.Duration
 
-	AutoCompactionRetention time.Duration
-	AutoCompactionMode      string
-	CompactionBatchLimit    int
-	CompactionSleepInterval int
-	QuotaBackendBytes       int64
-	MaxTxnOps               uint
+	AutoCompactionRetention   time.Duration
+	AutoCompactionMode        string
+	CompactionBatchLimit      int
+	CompactionSleepInterval   int
+	SpecialCompactStartHour   int
+	SpecialCompactStartMinute int
+	SpecialCompactEndHour     int
+	SpecialCompactEndMinute   int
+	SpecialCompactPeriod      time.Duration
+
+	QuotaBackendBytes int64
+	MaxTxnOps         uint
 
 	// MaxRequestBytes is the maximum request size to send over raft.
 	MaxRequestBytes uint
