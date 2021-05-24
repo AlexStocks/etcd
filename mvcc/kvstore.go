@@ -62,6 +62,7 @@ const (
 
 var restoreChunkKeys = 10000 // non-const for testing
 var defaultCompactBatchLimit = 1000
+var minimumBatchInterval = 10 * time.Millisecond
 
 // ConsistentIndexGetter is an interface that wraps the Get method.
 // Consistent index is the offset of an entry in a consistent replicated log.
@@ -71,7 +72,8 @@ type ConsistentIndexGetter interface {
 }
 
 type StoreConfig struct {
-	CompactionBatchLimit int
+	CompactionBatchLimit    int
+	CompactionSleepInterval time.Duration
 }
 
 type store struct {
@@ -119,6 +121,9 @@ type store struct {
 func NewStore(lg *zap.Logger, b backend.Backend, le lease.Lessor, ig ConsistentIndexGetter, cfg StoreConfig) *store {
 	if cfg.CompactionBatchLimit == 0 {
 		cfg.CompactionBatchLimit = defaultCompactBatchLimit
+	}
+	if cfg.CompactionSleepInterval == 0 {
+		cfg.CompactionSleepInterval = minimumBatchInterval
 	}
 	s := &store{
 		cfg:     cfg,
