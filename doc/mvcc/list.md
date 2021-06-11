@@ -14,3 +14,9 @@ GC 部分：
 ├── compaction.md  # 压缩 index 和 kvs store 的流程
 ```
 
+测试文件：
+
+```
+// 从测试用例看相关代码
+├── kv_test.go     # 从代码里可见 Read/Write 是对上的事务接口，具体的 CRUD 接口是 Put/Range/DeleteRange
+```

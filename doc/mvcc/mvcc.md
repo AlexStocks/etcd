@@ -10,7 +10,7 @@
 磁盘存储层分为内存的 MVCC 和 磁盘的 Backend(bbolt) 两层，Backend 下层具体的读写支持是由 BatchTx 提供的。Batch 的意思是写事务的批量提交。
 
 ```go
-// mvcc/backend/backend.go 
+// mvcc/backend/backend.go
 type Backend interface {
 	// 创建一个批量事务
 	BatchTx() BatchTx
@@ -202,7 +202,7 @@ type batchTxBuffered struct {
 }
 ```
 
-`newBatchTxBuffered()` 函数创建 batchTxBuffered.buf 时，其中的 batchTxBuffered.buf.seq 为 true。 
+`newBatchTxBuffered()` 函数创建 batchTxBuffered.buf 时，其中的 batchTxBuffered.buf.seq 为 true。
 
 在函数 `txWriteBuffer.put()` 中，设置 `txWriteBuffer.seq` 为 false，在 `txWriteBuffer.putSeq()` 中则直接调用 `bucketBuffer.add()`，把 kv 添加到数组末尾。
 
@@ -304,7 +304,7 @@ Backend 通过批量化和异步化提高写性能：
 * 1 执行 BatchTx 接口时候必须先获取锁 BatchTx.Lock() 和 BatchTx.UnLock()；
 * 2 每次写操作都累积一个操作数，当累积的操作数量达到一定阈值的时候，执行 commit 动作提交一个事务，这动作发生在 BatchTx.UnLock() 阶段；
 
-达到一定阈值进行写事务 commit 的代码如下： 
+达到一定阈值进行写事务 commit 的代码如下：
 
 ```go
 // mvcc/backend/batch_tx.go
@@ -351,3 +351,11 @@ func (b *backend) run() {
 	}
 }
 ```
+
+## Revision & Version
+
+Revision 是全局时钟。Version 是 key 的时钟，创建之时其 version 是1，然后在更新或写时依次递增，当删除时 version 值被重置成 1。
+
+
+
+

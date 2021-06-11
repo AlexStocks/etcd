@@ -115,7 +115,7 @@
 		tw.s.saveIndex(tw.tx)
 		// hold revMu lock to prevent new read txns from opening until writeback.
 		tw.s.revMu.Lock()
-		tw.s.currentRev++
+		tw.s.currentRev++ // 结束时增加，用于赋值 Revision
 	}
 	tw.tx.Unlock() // 解锁
 	if len(tw.changes) != 0 {

@@ -39,6 +39,7 @@ import (
 	"go.uber.org/zap"
 )
 
+// 测试版本号，每次 write 都会让 revision + 1
 func TestStoreRev(t *testing.T) {
 	b, tmpPath := backend.NewDefaultTmpBackend()
 	s := NewStore(zap.NewExample(), b, &lease.FakeLessor{}, nil, StoreConfig{})

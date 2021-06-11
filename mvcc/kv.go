@@ -37,9 +37,11 @@ type ReadView interface {
 	// FirstRev returns the first KV revision at the time of opening the txn.
 	// After a compaction, the first revision increases to the compaction
 	// revision.
+	// 返回事务开始时的第一个 KV 的 revision。如果发生了压缩，则使用压缩后的 revision
 	FirstRev() int64
 
 	// Rev returns the revision of the KV at the time of opening the txn.
+	// 返回事务开始时的 revision
 	Rev() int64
 
 	// Range gets the keys in the range at rangeRev.
@@ -47,7 +49,7 @@ type ReadView interface {
 	// If rangeRev <=0, range gets the keys at currentRev.
 	// If `end` is nil, the request returns the key.
 	// If `end` is not nil and not empty, it gets the keys in range [key, range_end).
-	// If `end` is not nil and empty, it gets the keys greater than or equal to key.
+	// If `end` is not nil and empty, it gets the keys greater than or equal to key. // range 是  【Key, 无穷大)
 	// Limit limits the number of keys returned.
 	// If the required rev is compacted, ErrCompacted will be returned.
 	Range(key, end []byte, ro RangeOptions) (r *RangeResult, err error)

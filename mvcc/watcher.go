@@ -59,6 +59,10 @@ type WatchStream interface {
 	// with this stream to ensure correct ordering.
 	// The responses contains no events. The revision in the response is the progress
 	// of the watchers since the watcher is currently synced.
+	//
+	// RequestProgress 获取 @id 的 watch 进度。只有 watcher 有正在同步的数据时，才会收到响应。
+	// 响应可以通过 WatchResponse Chan 获取到，以保证响应的顺序正确性。响应自身并不包含任何 event，
+	// 响应中的 revision 字段指明了同步的进度。
 	RequestProgress(id WatchID)
 
 	// Cancel cancels a watcher by giving its ID. If watcher does not exist, an error will be
@@ -77,6 +81,7 @@ type WatchResponse struct {
 	WatchID WatchID
 
 	// Events contains all the events that needs to send.
+	// WatchID 相关的所有待返回的 events 集合
 	Events []mvccpb.Event
 
 	// Revision is the revision of the KV when the watchResponse is created.
@@ -84,16 +89,22 @@ type WatchResponse struct {
 	// modified revision inside Events. For a delayed response to a unsynced
 	// watcher, the revision is greater than the last modified revision
 	// inside Events.
+	// Revision 是 watchResponse 创建时候的 KV 的 revision。如果响应是正常的，则
+	// Revision 是 Events 最后一次发生修改动作时的版本号。如果是异步的 watch，response
+	// 也是延迟返回的，则 revision 则会被 Events 最后一个修改动作相关的 revision 大
 	Revision int64
 
 	// CompactRevision is set when the watcher is cancelled due to compaction.
+	// 如果发生了 compaction，则这个值记录了最后一次 compaction 相关的 revision
 	CompactRevision int64
 }
 
 // watchStream contains a collection of watchers that share
 // one streaming chan to send out watched events and other control events.
+//
+// watchStream 包含了所有共享同一个 stream channel 的 watcher 的集合
 type watchStream struct {
-	watchable watchable
+	watchable watchable // watchableStore
 	ch        chan WatchResponse
 
 	mu sync.Mutex // guards fields below it
@@ -105,6 +116,12 @@ type watchStream struct {
 }
 
 // Watch creates a new watcher in the stream and returns its WatchID.
+// Watch 添加一个新的 watcher，各个参数意义如下：
+// id: watchID，如果 id == AutoWatchID(0)，则 @ws 会自动给分配一个新的 ID。如果 @id 已经被使用，则会返回 error
+// key: watch range 的起始 key
+// end: watch range 的结束 key
+// startRev: watch 的起始版本号
+// fcs: 过滤函数
 func (ws *watchStream) Watch(id WatchID, key, end []byte, startRev int64, fcs ...FilterFunc) (WatchID, error) {
 	// prevent wrong range where key >= end lexicographically
 	// watch request with 'WithFromKey' has empty-byte range end
@@ -139,6 +156,7 @@ func (ws *watchStream) Chan() <-chan WatchResponse {
 	return ws.ch
 }
 
+// 删除 @id 相关的 watcher 和 cancel
 func (ws *watchStream) Cancel(id WatchID) error {
 	ws.mu.Lock()
 	cancel, ok := ws.cancels[id]
@@ -182,6 +200,9 @@ func (ws *watchStream) Rev() int64 {
 	return ws.watchable.rev()
 }
 
+// RequestProgress 获取 @id 的 watch 进度。只有 watcher 有正在同步的数据时，才会收到响应。
+// 响应可以通过 WatchResponse Chan 获取到，以保证响应的顺序正确性。响应自身并不包含任何 event，
+// 响应中的 revision 字段指明了同步的进度。
 func (ws *watchStream) RequestProgress(id WatchID) {
 	ws.mu.Lock()
 	w, ok := ws.watchers[id]

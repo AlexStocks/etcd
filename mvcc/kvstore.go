@@ -89,7 +89,9 @@ type store struct {
 
 	ig ConsistentIndexGetter
 
+	// bolt 磁盘封装
 	b       backend.Backend
+	// 内存封装
 	kvindex index
 
 	le lease.Lessor
@@ -99,6 +101,10 @@ type store struct {
 	// Locked before locking read txn and released after locking.
 	revMu sync.RWMutex
 	// currentRev is the revision of the last completed transaction.
+    //
+    // store的每次写操作(Put、Delete等)都会使currentRev递增。currentRev就是Revision。
+    // 它是一个“严格”递增的版本号。“严格”是指currentRev的每次递增都会有锁。
+    // 从 store.Write() 中可见，storeTxnWrite.beginRev = store.currentRev
 	currentRev int64
 	// compactMainRev is the main revision of the last compaction.
 	compactMainRev int64

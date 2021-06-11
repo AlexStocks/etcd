@@ -61,7 +61,7 @@ type storeTxnWrite struct {
 	tx backend.BatchTx
 	// beginRev is the revision where the txn begins; it will write to the next revision.
 	beginRev int64
-	changes  []mvccpb.KeyValue
+	changes  []mvccpb.KeyValue // 一次批量写动作，Revision.sub = len(changes)
 }
 
 func (s *store) Write(trace *traceutil.Trace) TxnWrite {
@@ -96,7 +96,7 @@ func (tw *storeTxnWrite) DeleteRange(key, end []byte) (int64, int64) {
 
 func (tw *storeTxnWrite) Put(key, value []byte, lease lease.LeaseID) int64 {
 	tw.put(key, value, lease)
-	return tw.beginRev + 1
+	return tw.beginRev + 1 // 返回当前子事务的 Revision，每次操作子事务时，这个值都会增 1
 }
 
 func (tw *storeTxnWrite) End() {
@@ -185,6 +185,8 @@ func (tw *storeTxnWrite) put(key, value []byte, leaseID lease.LeaseID) {
 	}
 	tw.trace.Step("get key's previous created_revision and leaseID")
 	ibytes := newRevBytes()
+	// 从这里可见，sub 就是 batch tx 中第 n 个子事务的下标，
+	// main 则是每次执行子事务时都会增 1
 	idxRev := revision{main: rev, sub: int64(len(tw.changes))}
 	revToBytes(idxRev, ibytes)
 
@@ -193,7 +195,7 @@ func (tw *storeTxnWrite) put(key, value []byte, leaseID lease.LeaseID) {
 		Key:            key,
 		Value:          value,
 		CreateRevision: c,
-		ModRevision:    rev,
+		ModRevision:    rev, // 从这里可见，ModRevision 是事务的版本号
 		Version:        ver,
 		Lease:          int64(leaseID),
 	}
@@ -211,9 +213,9 @@ func (tw *storeTxnWrite) put(key, value []byte, leaseID lease.LeaseID) {
 	}
 
 	tw.trace.Step("marshal mvccpb.KeyValue")
-	tw.tx.UnsafeSeqPut(keyBucketName, ibytes, d)
-	tw.s.kvindex.Put(key, idxRev)
-	tw.changes = append(tw.changes, kv)
+	tw.tx.UnsafeSeqPut(keyBucketName, ibytes, d) // Backend 添加 Revision -> KeyValue
+	tw.s.kvindex.Put(key, idxRev) // BTree Index 中添加 key -> Revision 索引
+	tw.changes = append(tw.changes, kv) // 在 batch transaction 中存储新完成的子事务
 	tw.trace.Step("store kv pair into bolt db")
 
 	if oldLease != lease.NoLease {

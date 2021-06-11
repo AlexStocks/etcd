@@ -56,7 +56,7 @@ func (txw *txWriteBuffer) putSeq(bucket, k, v []byte) {
 	b.add(k, v)
 }
 
-// 把 txw 中的内容合入 txr
+// 把 txw 中的内容清理掉，合并到 @txr
 func (txw *txWriteBuffer) writeback(txr *txReadBuffer) {
 	for k, wb := range txw.buckets {
 		// 如果 txw 中的 bucket 在 txr 中不存在，则把 txw 中该 bucket 删除后放入 txr 中
@@ -66,7 +66,7 @@ func (txw *txWriteBuffer) writeback(txr *txReadBuffer) {
 			txr.buckets[k] = wb
 			continue
 		}
-		//
+		// 如果 txw 中 buffer 讲究顺序，则进行排序
 		if !txw.seq && wb.used > 1 {
 			// assume no duplicate keys
 			sort.Sort(wb)
@@ -116,7 +116,7 @@ type kv struct {
 type bucketBuffer struct {
 	buf []kv
 	// used tracks number of elements in use so buf can be reused without reallocation.
-	used int
+	used int // buf 的实际长度
 }
 
 func newBucketBuffer() *bucketBuffer {

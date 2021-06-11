@@ -94,8 +94,7 @@ func (rt *readTx) UnsafeRange(bucketName, key, endKey []byte, limit int64) ([][]
 	c := bucket.Cursor()
 	rt.txMu.Unlock()
 
-	// 从磁盘读取一部分数据，
-
+	// 从磁盘读取一部分数据
 	k2, v2 := unsafeRange(c, key, endKey, limit-int64(len(keys)))
 	return append(k2, keys...), append(v2, vals...)
 }
