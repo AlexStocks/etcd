@@ -64,6 +64,7 @@ func New(lg *zap.Logger, dir string) *Snapshotter {
 	}
 }
 
+// save 函数的对外接口
 func (s *Snapshotter) SaveSnap(snapshot raftpb.Snapshot) error {
 	if raft.IsEmptySnap(snapshot) {
 		return nil
@@ -71,6 +72,8 @@ func (s *Snapshotter) SaveSnap(snapshot raftpb.Snapshot) error {
 	return s.save(&snapshot)
 }
 
+// 1 文件名称格式是 term-index.snap
+// 2 计算 @snapshot 的 crc32 值，然后存储 crc32 + @snapshot
 func (s *Snapshotter) save(snapshot *raftpb.Snapshot) error {
 	start := time.Now()
 
@@ -110,11 +113,13 @@ func (s *Snapshotter) save(snapshot *raftpb.Snapshot) error {
 }
 
 // Load returns the newest snapshot.
+// 返回最新的 snapshot
 func (s *Snapshotter) Load() (*raftpb.Snapshot, error) {
 	return s.loadMatching(func(*raftpb.Snapshot) bool { return true })
 }
 
 // LoadNewestAvailable loads the newest snapshot available that is in walSnaps.
+// 从 snapshot 数据查找能够匹配 @walSnaps 中 snapshot 的最新项
 func (s *Snapshotter) LoadNewestAvailable(walSnaps []walpb.Snapshot) (*raftpb.Snapshot, error) {
 	return s.loadMatching(func(snapshot *raftpb.Snapshot) bool {
 		m := snapshot.Metadata
@@ -129,11 +134,13 @@ func (s *Snapshotter) LoadNewestAvailable(walSnaps []walpb.Snapshot) (*raftpb.Sn
 
 // loadMatching returns the newest snapshot where matchFn returns true.
 func (s *Snapshotter) loadMatching(matchFn func(*raftpb.Snapshot) bool) (*raftpb.Snapshot, error) {
+	// 返回 snapshot 文件列表，文件名称反序排列，最新的在最前面
 	names, err := s.snapNames()
 	if err != nil {
 		return nil, err
 	}
 	var snap *raftpb.Snapshot
+	// 循环加载 snap 文件，加载成功一个即可
 	for _, name := range names {
 		if snap, err = loadSnap(s.lg, s.dir, name); err == nil && matchFn(snap) {
 			return snap, nil
@@ -142,6 +149,7 @@ func (s *Snapshotter) loadMatching(matchFn func(*raftpb.Snapshot) bool) (*raftpb
 	return nil, ErrNoSnapshot
 }
 
+// 读取 snapshot 文件
 func loadSnap(lg *zap.Logger, dir, name string) (*raftpb.Snapshot, error) {
 	fpath := filepath.Join(dir, name)
 	snap, err := Read(lg, fpath)
@@ -166,6 +174,7 @@ func loadSnap(lg *zap.Logger, dir, name string) (*raftpb.Snapshot, error) {
 }
 
 // Read reads the snapshot named by snapname and returns the snapshot.
+// 读取 snapshot 文件，文件开头存储 crc32 checksum 值，然后是 raftpb.Snapshot 数据
 func Read(lg *zap.Logger, snapname string) (*raftpb.Snapshot, error) {
 	b, err := ioutil.ReadFile(snapname)
 	if err != nil {
@@ -186,7 +195,7 @@ func Read(lg *zap.Logger, snapname string) (*raftpb.Snapshot, error) {
 		return nil, ErrEmptySnapshot
 	}
 
-	var serializedSnap snappb.Snapshot
+	var serializedSnap snappb.Snapshot // crc32 checksum + raftpb.Snapshot data
 	if err = serializedSnap.Unmarshal(b); err != nil {
 		if lg != nil {
 			lg.Warn("failed to unmarshal snappb.Snapshot", zap.String("path", snapname), zap.Error(err))
@@ -205,6 +214,7 @@ func Read(lg *zap.Logger, snapname string) (*raftpb.Snapshot, error) {
 		return nil, ErrEmptySnapshot
 	}
 
+	// 校验 crc
 	crc := crc32.Update(0, crcTable, serializedSnap.Data)
 	if crc != serializedSnap.Crc {
 		if lg != nil {
@@ -219,6 +229,7 @@ func Read(lg *zap.Logger, snapname string) (*raftpb.Snapshot, error) {
 		return nil, ErrCRCMismatch
 	}
 
+	// 反序列化 snap
 	var snap raftpb.Snapshot
 	if err = snap.Unmarshal(serializedSnap.Data); err != nil {
 		if lg != nil {
@@ -239,22 +250,27 @@ func (s *Snapshotter) snapNames() ([]string, error) {
 		return nil, err
 	}
 	defer dir.Close()
+	// 返回某个目录下的所有文件
 	names, err := dir.Readdirnames(-1)
 	if err != nil {
 		return nil, err
 	}
+	// 清理 "db.tmp" 结尾的临时文件
 	names, err = s.cleanupSnapdir(names)
 	if err != nil {
 		return nil, err
 	}
+	// 过滤出 ".snap" 文件列表
 	snaps := checkSuffix(s.lg, names)
 	if len(snaps) == 0 {
 		return nil, ErrNoSnapshot
 	}
+	// 按照字母顺序反向排列
 	sort.Sort(sort.Reverse(sort.StringSlice(snaps)))
 	return snaps, nil
 }
 
+// 过滤文件名称列表 @names，返回 ".snap" 文件列表
 func checkSuffix(lg *zap.Logger, names []string) []string {
 	snaps := []string{}
 	for i := range names {
@@ -277,6 +293,7 @@ func checkSuffix(lg *zap.Logger, names []string) []string {
 
 // cleanupSnapdir removes any files that should not be in the snapshot directory:
 // - db.tmp prefixed files that can be orphaned by defragmentation
+// 清理 "db.tmp" 结尾的文件
 func (s *Snapshotter) cleanupSnapdir(filenames []string) (names []string, err error) {
 	for _, filename := range filenames {
 		if strings.HasPrefix(filename, "db.tmp") {

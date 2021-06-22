@@ -34,9 +34,11 @@ const frameSizeBytes = 8
 
 type decoder struct {
 	mu  sync.Mutex
+	// wal 文件句柄列表
 	brs []*bufio.Reader
 
 	// lastValidOff file offset following the last valid decoded record
+	// 当前读取的文件 decoder.brs[0] 的 offset
 	lastValidOff int64
 	crc          hash.Hash32
 }
@@ -59,6 +61,7 @@ func (d *decoder) decode(rec *walpb.Record) error {
 	return d.decodeRecord(rec)
 }
 
+// 解析 d.drs 中的每个文件中的每个记录，翻译成 @rec
 func (d *decoder) decodeRecord(rec *walpb.Record) error {
 	if len(d.brs) == 0 {
 		return io.EOF
@@ -67,6 +70,7 @@ func (d *decoder) decodeRecord(rec *walpb.Record) error {
 	l, err := readInt64(d.brs[0])
 	if err == io.EOF || (err == nil && l == 0) {
 		// hit end of file or preallocated space
+		// 一个文件读取到尽头，就换到下个文件
 		d.brs = d.brs[1:]
 		if len(d.brs) == 0 {
 			return io.EOF
@@ -78,8 +82,10 @@ func (d *decoder) decodeRecord(rec *walpb.Record) error {
 		return err
 	}
 
+	// 获取 record 序列化后的真实长度以及 pad 字节流长度
 	recBytes, padBytes := decodeFrameSize(l)
 
+	// 读取二级制数据
 	data := make([]byte, recBytes+padBytes)
 	if _, err = io.ReadFull(d.brs[0], data); err != nil {
 		// ReadFull returns io.EOF only if no bytes were read
@@ -89,6 +95,7 @@ func (d *decoder) decodeRecord(rec *walpb.Record) error {
 		}
 		return err
 	}
+	// 反序列化
 	if err := rec.Unmarshal(data[:recBytes]); err != nil {
 		if d.isTornEntry(data) {
 			return io.ErrUnexpectedEOF
@@ -99,6 +106,7 @@ func (d *decoder) decodeRecord(rec *walpb.Record) error {
 	// skip crc checking if the record type is crcType
 	if rec.Type != crcType {
 		d.crc.Write(rec.Data)
+		// 校验 wal record 的 crc
 		if err := rec.Validate(d.crc.Sum32()); err != nil {
 			if d.isTornEntry(data) {
 				return io.ErrUnexpectedEOF
@@ -107,10 +115,12 @@ func (d *decoder) decodeRecord(rec *walpb.Record) error {
 		}
 	}
 	// record decoded as valid; point last valid offset to end of record
+	// 记录本次读取文件的 offset
 	d.lastValidOff += frameSizeBytes + recBytes + padBytes
 	return nil
 }
 
+// wal 中每个 wal record 的前 8 个字节存储了 record 的长度：第一个字节存储了 pad 长度，后 7 个字节存储了 record 的真实长度
 func decodeFrameSize(lenField int64) (recBytes int64, padBytes int64) {
 	// the record size is stored in the lower 56 bits of the 64-bit length
 	recBytes = int64(uint64(lenField) & ^(uint64(0xff) << 56))

@@ -427,12 +427,14 @@ func NewServer(cfg ServerConfig) (srv *EtcdServer, err error) {
 		}
 
 		// Find a snapshot to start/restart a raft node
+		// 读取 wal 中的 snapshot 项
 		walSnaps, serr := wal.ValidSnapshotEntries(cfg.Logger, cfg.WALDir())
 		if serr != nil {
 			return nil, serr
 		}
 		// snapshot files can be orphaned if etcd crashes after writing them but before writing the corresponding
 		// wal log entries
+		// 返回 snapshot 文件中能够跟 wal 中 snapshot 项匹配的最新 snapshot 文件
 		snapshot, err = ss.LoadNewestAvailable(walSnaps)
 		if err != nil && err != snap.ErrNoSnapshot {
 			return nil, err
@@ -457,6 +459,7 @@ func NewServer(cfg ServerConfig) (srv *EtcdServer, err error) {
 				plog.Infof("recovered store from snapshot at index %d", snapshot.Metadata.Index)
 			}
 
+			// 关闭旧的 backend，根据 @snapshot 生成新的 backend
 			if be, err = recoverSnapshotBackend(cfg, be, *snapshot); err != nil {
 				if cfg.Logger != nil {
 					cfg.Logger.Panic("failed to recover v3 backend from snapshot", zap.Error(err))

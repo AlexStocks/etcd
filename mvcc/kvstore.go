@@ -347,6 +347,7 @@ func (s *store) Commit() {
 	s.b.ForceCommit()
 }
 
+// 初始化 store，并从已有的磁盘数据恢复内存索引
 func (s *store) Restore(b backend.Backend) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -378,6 +379,7 @@ func (s *store) restore() error {
 	tx := s.b.BatchTx()
 	tx.Lock()
 
+	// 获取已经完成 compact 的版本号
 	_, finishedCompactBytes := tx.UnsafeRange(metaBucketName, finishedCompactKeyName, nil, 0)
 	if len(finishedCompactBytes) != 0 {
 		s.compactMainRev = bytesToRev(finishedCompactBytes[0]).main
@@ -393,6 +395,7 @@ func (s *store) restore() error {
 			plog.Printf("restore compact to %d", s.compactMainRev)
 		}
 	}
+	// 获取调度中的 compact 版本号
 	_, scheduledCompactBytes := tx.UnsafeRange(metaBucketName, scheduledCompactKeyName, nil, 0)
 	scheduledCompact := int64(0)
 	if len(scheduledCompactBytes) != 0 {
@@ -409,22 +412,29 @@ func (s *store) restore() error {
 		}
 		// rkvc blocks if the total pending keys exceeds the restore
 		// chunk size to keep keys from consuming too much memory.
+		// 从磁盘读取数据，传递给 rkvc
 		restoreChunk(s.lg, rkvc, keys, vals, keyToLease)
+		// 获取到的 keys 的 size 小于 restoreChunkKeys，说明已经遍历到了最后
 		if len(keys) < restoreChunkKeys {
 			// partial set implies final set
 			break
 		}
 		// next set begins after where this one ended
+		// 获取新的最小版本号
 		newMin := bytesToRev(keys[len(keys)-1][:revBytesLen])
 		newMin.sub++
 		revToBytes(newMin, min)
 	}
+	// 在这里 restoreIntoIndex 中的 goroutine 停止循环
 	close(rkvc)
+	// 等待 restoreIntoIndex 中 goroutine 运行结束
 	s.currentRev = <-revc
 
 	// keys in the range [compacted revision -N, compaction] might all be deleted due to compaction.
 	// the correct revision should be set to compaction revision in the case, not the largest revision
 	// we have seen.
+	//
+	// 如果 currentRev 小于 compactMainRev，则把 currentRev 置换为 compactMainRev
 	if s.currentRev < s.compactMainRev {
 		s.currentRev = s.compactMainRev
 	}
@@ -432,6 +442,7 @@ func (s *store) restore() error {
 		scheduledCompact = 0
 	}
 
+	// 根据 boltdb 中恢复的 lease map 数据，给相关 key 绑定 lease
 	for key, lid := range keyToLease {
 		if s.le == nil {
 			panic("no lessor to attach lease")
@@ -452,6 +463,7 @@ func (s *store) restore() error {
 
 	tx.Unlock()
 
+	// 执行完毕由于意外没有执行完毕的 compact 任务
 	if scheduledCompact != 0 {
 		s.compactLockfree(scheduledCompact)
 
@@ -471,22 +483,25 @@ func (s *store) restore() error {
 }
 
 type revKeyValue struct {
-	key  []byte
-	kv   mvccpb.KeyValue
-	kstr string
+	key  []byte // 版本号 key
+	kv   mvccpb.KeyValue // 用户value
+	kstr string  // 真正的 key
 }
 
+// 根据从 bolt 获取到的数据，重建内存 index
 func restoreIntoIndex(lg *zap.Logger, idx index) (chan<- revKeyValue, <-chan int64) {
 	rkvc, revc := make(chan revKeyValue, restoreChunkKeys), make(chan int64, 1)
 	go func() {
 		currentRev := int64(1)
 		defer func() { revc <- currentRev }()
 		// restore the tree index from streaming the unordered index.
+		// keyIndex 缓存
 		kiCache := make(map[string]*keyIndex, restoreChunkKeys)
 		for rkv := range rkvc {
 			ki, ok := kiCache[rkv.kstr]
 			// purge kiCache if many keys but still missing in the cache
 			if !ok && len(kiCache) >= restoreChunkKeys {
+				// 从 kiCache 中随机删除 10 个 key
 				i := 10
 				for k := range kiCache {
 					delete(kiCache, k)
@@ -498,6 +513,7 @@ func restoreIntoIndex(lg *zap.Logger, idx index) (chan<- revKeyValue, <-chan int
 			// cache miss, fetch from tree index if there
 			if !ok {
 				ki = &keyIndex{key: rkv.kv.Key}
+				// 从 tree index 中搜索出 key 的 keyIndex，存入 kiCache
 				if idxKey := idx.KeyIndex(ki); idxKey != nil {
 					kiCache[rkv.kstr], ki = idxKey, idxKey
 					ok = true
@@ -505,14 +521,17 @@ func restoreIntoIndex(lg *zap.Logger, idx index) (chan<- revKeyValue, <-chan int
 			}
 			rev := bytesToRev(rkv.key)
 			currentRev = rev.main
-			if ok {
+			if ok { // treeIndex 中存在这个 keyIndex
+				// 如果 rkv 中的 版本号 key rkv.key 是一个 tombstone，则在 keyIndex 中放入一个 tombstone revision
 				if isTombstone(rkv.key) {
 					ki.tombstone(lg, rev.main, rev.sub)
 					continue
 				}
 				ki.put(lg, rev.main, rev.sub)
-			} else if !isTombstone(rkv.key) {
+			} else if !isTombstone(rkv.key) { // treeIndex 中没有这个 key 的 keyIndex
+				// 在 keyIndex 中存入一个新的 revision
 				ki.restore(lg, revision{rkv.kv.CreateRevision, 0}, rev, rkv.kv.Version)
+				// 把 ki 插入 treeIndex 中
 				idx.Insert(ki)
 				kiCache[rkv.kstr] = ki
 			}
@@ -521,6 +540,9 @@ func restoreIntoIndex(lg *zap.Logger, idx index) (chan<- revKeyValue, <-chan int
 	return rkvc, revc
 }
 
+// 1 把从 bolt 读取到的数据 @keys & vals 反序列化；
+// 2 把数据通过 @kvc 传递给 restoreIntoIndex 函数，以回复内存 index；
+// 3 如果数据已经绑定了 lease，则把相关关系存入 keyToLease。
 func restoreChunk(lg *zap.Logger, kvc chan<- revKeyValue, keys, vals [][]byte, keyToLease map[string]lease.LeaseID) {
 	for i, key := range keys {
 		rkv := revKeyValue{key: key}

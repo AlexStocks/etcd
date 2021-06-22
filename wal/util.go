@@ -38,6 +38,8 @@ func Exist(dir string) bool {
 // searchIndex returns the last array index of names whose raft index section is
 // equal to or smaller than the given index.
 // The given names MUST be sorted.
+// 返回 @names 中第一个文件名称中 index 小于等于 @index 的文件名称的位置
+// 切记：wal 文件的第二个数字才是 index，第一个数字是文件递增序号 seq
 func searchIndex(lg *zap.Logger, names []string, index uint64) (int, bool) {
 	for i := len(names) - 1; i >= 0; i-- {
 		name := names[i]
@@ -58,6 +60,7 @@ func searchIndex(lg *zap.Logger, names []string, index uint64) (int, bool) {
 
 // names should have been sorted based on sequence number.
 // isValidSeq checks whether seq increases continuously.
+// 验证 wal 文件中的 seq 是否递增
 func isValidSeq(lg *zap.Logger, names []string) bool {
 	var lastSeq uint64
 	for _, name := range names {
@@ -77,6 +80,7 @@ func isValidSeq(lg *zap.Logger, names []string) bool {
 	return true
 }
 
+// 读取 @dirpath 下所有文件的名称的列表，过滤掉 ".tmp" 文件
 func readWALNames(lg *zap.Logger, dirpath string) ([]string, error) {
 	names, err := fileutil.ReadDir(dirpath)
 	if err != nil {
@@ -89,6 +93,7 @@ func readWALNames(lg *zap.Logger, dirpath string) ([]string, error) {
 	return wnames, nil
 }
 
+// 删除 ".tmp" 文件
 func checkWalNames(lg *zap.Logger, names []string) []string {
 	wnames := make([]string, 0)
 	for _, name := range names {

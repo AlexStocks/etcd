@@ -368,11 +368,14 @@ func openAtIndex(lg *zap.Logger, dirpath string, snap walpb.Snapshot, write bool
 }
 
 func selectWALFiles(lg *zap.Logger, dirpath string, snap walpb.Snapshot) ([]string, int, error) {
+	// 获取目录下所有合格的 wal 文件名称列表
 	names, err := readWALNames(lg, dirpath)
 	if err != nil {
 		return nil, -1, err
 	}
 
+	// 查找合乎 @snap.Index 的起始 wal 文件名称的 index
+	// 切记：wal 文件的第二个数字才是 index，第一个数字是文件递增序号 seq
 	nameIndex, ok := searchIndex(lg, names, snap.Index)
 	if !ok || !isValidSeq(lg, names[nameIndex:]) {
 		err = ErrFileNotFound
@@ -382,6 +385,7 @@ func selectWALFiles(lg *zap.Logger, dirpath string, snap walpb.Snapshot) ([]stri
 	return names, nameIndex, nil
 }
 
+// 返回 @dirpath + names 中所有文件的打开句柄、读取函数以及关闭接口
 func openWALFiles(lg *zap.Logger, dirpath string, names []string, nameIndex int, write bool) ([]io.Reader, []*fileutil.LockedFile, func() error, error) {
 	rcs := make([]io.ReadCloser, 0)
 	rs := make([]io.Reader, 0)
@@ -540,6 +544,7 @@ func ValidSnapshotEntries(lg *zap.Logger, walDir string) ([]walpb.Snapshot, erro
 	var err error
 
 	rec := &walpb.Record{}
+	// 1 获取有效的 wal 文件列表
 	names, err := readWALNames(lg, walDir)
 	if err != nil {
 		return nil, err
@@ -547,6 +552,7 @@ func ValidSnapshotEntries(lg *zap.Logger, walDir string) ([]walpb.Snapshot, erro
 
 	// open wal files in read mode, so that there is no conflict
 	// when the same WAL is opened elsewhere in write mode
+	// 以读模式获取 @walDir + @names 下的所有文件的读取接口 @rs 和关闭接口 @closer
 	rs, _, closer, err := openWALFiles(lg, walDir, names, 0, false)
 	if err != nil {
 		return nil, err
@@ -562,11 +568,11 @@ func ValidSnapshotEntries(lg *zap.Logger, walDir string) ([]walpb.Snapshot, erro
 
 	for err = decoder.decode(rec); err == nil; err = decoder.decode(rec) {
 		switch rec.Type {
-		case snapshotType:
+		case snapshotType: // index + term 记录
 			var loadedSnap walpb.Snapshot
 			pbutil.MustUnmarshal(&loadedSnap, rec.Data)
 			snaps = append(snaps, loadedSnap)
-		case stateType:
+		case stateType: // term + vote + commit 记录
 			state = mustUnmarshalState(rec.Data)
 		case crcType:
 			crc := decoder.crc.Sum32()
@@ -585,6 +591,7 @@ func ValidSnapshotEntries(lg *zap.Logger, walDir string) ([]walpb.Snapshot, erro
 	}
 
 	// filter out any snaps that are newer than the committed hardstate
+	// 过滤掉 index 大于 state.Commit 的 snapshot record 记录 walpb.Snapshot
 	n := 0
 	for _, s := range snaps {
 		if s.Index <= state.Commit {
@@ -604,13 +611,19 @@ func ValidSnapshotEntries(lg *zap.Logger, walDir string) ([]walpb.Snapshot, erro
 // If it cannot read out the expected snap, it will return ErrSnapshotNotFound.
 // If the loaded snap doesn't match with the expected one, it will
 // return error ErrSnapshotMismatch.
+//
+// Verify 检测文件 @walDir 是否已经破损。
+// 这个函数会创建一个新的 decoder 去遍历 @walDir 下的所有 wal 文件。
+// 如果当前 wal 正处于被使用【有数据写入】状态下，不建议调用这个函数。
+// 如果找不到 @snap 对应 [index 对应] 的 wal 文件，则返回 ErrSnapshotNotFound
+// 如果 wal 中读取不到目标 snapshot 记录 @snap 对应的 wal record，则返回 ErrSnapshotMismatch
 func Verify(lg *zap.Logger, walDir string, snap walpb.Snapshot) error {
 	var metadata []byte
 	var err error
 	var match bool
 
 	rec := &walpb.Record{}
-
+    // 返回 @walDir 下的文件名称列表、查找合乎 @snap.index 要求的起始index @nameIndex
 	names, nameIndex, err := selectWALFiles(lg, walDir, snap)
 	if err != nil {
 		return err
@@ -618,6 +631,7 @@ func Verify(lg *zap.Logger, walDir string, snap walpb.Snapshot) error {
 
 	// open wal files in read mode, so that there is no conflict
 	// when the same WAL is opened elsewhere in write mode
+	// 获取 names[nameIndex:] 文件句柄数组
 	rs, _, closer, err := openWALFiles(lg, walDir, names, nameIndex, false)
 	if err != nil {
 		return err
@@ -625,7 +639,7 @@ func Verify(lg *zap.Logger, walDir string, snap walpb.Snapshot) error {
 
 	// create a new decoder from the readers on the WAL files
 	decoder := newDecoder(rs...)
-
+    // 遍历所有的 wal 记录
 	for err = decoder.decode(rec); err == nil; err = decoder.decode(rec) {
 		switch rec.Type {
 		case metadataType:
@@ -648,7 +662,7 @@ func Verify(lg *zap.Logger, walDir string, snap walpb.Snapshot) error {
 				if loadedSnap.Term != snap.Term {
 					return ErrSnapshotMismatch
 				}
-				match = true
+				match = true // 找到了 @snap 对应的 wal 记录
 			}
 		// We ignore all entry and state type records as these
 		// are not necessary for validating the WAL contents
