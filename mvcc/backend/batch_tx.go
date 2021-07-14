@@ -37,6 +37,11 @@ type BatchTx interface {
 	CommitAndStop()
 }
 
+// batchTx 是在 boltdb 之上直接操作，在 v3.4 中已经过时
+//
+// batchTx 的读写操作需要在 Lock 的保护下进行调用。
+// 它直接操作 boltdb，在每次操作结束解锁 batchTx.Unlock() 的时候判断 pending 的 kv 数据，如果到了 batch  limit 则 commit 到 db，并重新生成一个 tx
+// batchTx 总体提供了 Put/Delete/Commit/ForEach/Range 等操作，其中 UnsafeXXX() 系列函数起始逻辑是判断 bucket 是否存在，如果存在再调用 unsafeXXX() 系列函数。
 type batchTx struct {
 	sync.Mutex
 	tx      *bolt.Tx
@@ -256,6 +261,9 @@ func (t *batchTx) commit(stop bool) {
 	}
 }
 
+// 在 batchTx 之上，添加了一个 txWriteBuffer，用于缓存要写入 boltdb 的 kv
+// batchTxBuffered 总体重新提供了 UnsafePut/UnsafeDelete 接口，这些接口直接读写 batchTxBuffered.buf，不跟 boltdb 直接交互。
+// Unlock 较之前也有一些变化：直接把 pending 的 kv merge 到 readTx 的 buffer 中，如果达到 batch 大小就直接强制提交。
 type batchTxBuffered struct {
 	batchTx
 	buf txWriteBuffer
@@ -276,6 +284,7 @@ func newBatchTxBuffered(backend *backend) *batchTxBuffered {
 func (t *batchTxBuffered) Unlock() {
 	if t.pending != 0 {
 		t.backend.readTx.Lock() // blocks txReadBuffer for writing.
+		// 把 t.buf 中的数据合并到 t.backend.readTx.buf 中，并清空 t.buf
 		t.buf.writeback(&t.backend.readTx.buf)
 		t.backend.readTx.Unlock()
 		if t.pending >= t.backend.batchLimit {
@@ -305,6 +314,9 @@ func (t *batchTxBuffered) commit(stop bool) {
 	t.backend.readTx.Unlock()
 }
 
+// 这个函数中有一个 goroutine 异步函数处理逻辑：
+// 1. 等待所有读 goroutine 逻辑结束；
+// 2. 进行 t.backend.readTx.tx.Rollback() ，回滚所有的更新【这个 tx 来自于 readTx，tx.Rollback() 函数注释写的很好】
 func (t *batchTxBuffered) unsafeCommit(stop bool) {
 	if t.backend.readTx.tx != nil {
 		// wait all store read transactions using the current boltdb tx to finish,
@@ -319,6 +331,7 @@ func (t *batchTxBuffered) unsafeCommit(stop bool) {
 				}
 			}
 		}(t.backend.readTx.tx, t.backend.readTx.txWg)
+		// 重置 readTx，以循环利用
 		t.backend.readTx.reset()
 	}
 

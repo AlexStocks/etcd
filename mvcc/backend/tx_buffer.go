@@ -21,13 +21,14 @@ import (
 
 // txBuffer handles functionality shared between txWriteBuffer and txReadBuffer.
 type txBuffer struct {
-	buckets map[string]*bucketBuffer
+	buckets map[string]*bucketBuffer // key 是 bucket 名称
 }
 
 func (txb *txBuffer) reset() {
 	for k, v := range txb.buckets {
 		if v.used == 0 {
 			// demote
+			// 为空，则直接从 txb.buckets 中删除该 bucket
 			delete(txb.buckets, k)
 		}
 		v.used = 0

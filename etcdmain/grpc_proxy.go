@@ -79,10 +79,12 @@ var (
 	grpcProxyResolverPrefix     string
 	grpcProxyResolverTTL        int
 
+	// 为所有的key请求加上前缀空间
 	grpcProxyNamespace string
 	grpcProxyLeasing   string
 
 	grpcProxyEnablePprof    bool
+	// 保证grpc proxy的Revision(版本号)小于或等于etcd服务器之间的Revision(版本号)
 	grpcProxyEnableOrdering bool
 
 	grpcProxyDebug bool
@@ -150,6 +152,7 @@ func newGRPCProxyStartCommand() *cobra.Command {
 }
 
 func startGRPCProxy(cmd *cobra.Command, args []string) {
+	// 1 检验参数合法性
 	checkArgs()
 
 	lcfg := logutil.DefaultZapLoggerConfig
@@ -171,6 +174,7 @@ func startGRPCProxy(cmd *cobra.Command, args []string) {
 	}
 	grpclog.SetLoggerV2(gl)
 
+	// 2 判断是否校验 https
 	tlsinfo := newTLS(grpcProxyListenCA, grpcProxyListenCert, grpcProxyListenKey)
 	if tlsinfo == nil && grpcProxyListenAutoTLS {
 		host := []string{"https://" + grpcProxyListenAddr}
@@ -184,21 +188,28 @@ func startGRPCProxy(cmd *cobra.Command, args []string) {
 	if tlsinfo != nil {
 		lg.Info("gRPC proxy server TLS", zap.String("tls-info", fmt.Sprintf("%+v", tlsinfo)))
 	}
+	// 3 生成 mux 路由
 	m := mustListenCMux(lg, tlsinfo)
+	// 4 grpc mux 路由
 	grpcl := m.Match(cmux.HTTP2())
 	defer func() {
 		grpcl.Close()
 		lg.Info("stop listening gRPC proxy client requests", zap.String("address", grpcProxyListenAddr))
 	}()
-
+    // 5 etcd 服务注册的 stream 链接
 	client := mustNewClient(lg)
 	httpClient := mustNewHTTPClient(lg)
 
+	// 6 一些性能和资源监控的封装，如Prometheus，PProf等
 	srvhttp, httpl := mustHTTPListener(lg, m, tlsinfo, client)
 	errc := make(chan error)
+	// 7 grpc 服务
 	go func() { errc <- newGRPCProxyServer(lg, client).Serve(grpcl) }()
+	// 8 http 服务
 	go func() { errc <- srvhttp.Serve(httpl) }()
+	// 9 mux server
 	go func() { errc <- m.Serve() }()
+	// 10 只是它把监控信息给通过grpcProxyMetricsListenAddr给独立了出来
 	if len(grpcProxyMetricsListenAddr) > 0 {
 		mhttpl := mustMetricsListener(lg, tlsinfo)
 		go func() {

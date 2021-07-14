@@ -37,6 +37,10 @@ type ReadTx interface {
 	UnsafeForEach(bucketName []byte, visitor func(k, v []byte) error) error
 }
 
+// 提供了对各个 bucket 读操作的封装。
+// 其中包含了两块，一部分是 cache，另一部分是真实 db 的 bucket 的句柄。
+// readTx 中有两个 lock：mu 和 txMu，readTx.mu 保护对象是 readTx.buf，readTx.txMu 保护 readTx.buckets
+// txMu 只有在查询 bucket 或者变更 bucket 的时候才会进去临界区。
 type readTx struct {
 	// mu protects accesses to the txReadBuffer
 	mu  sync.RWMutex
@@ -48,9 +52,11 @@ type readTx struct {
 	tx      *bolt.Tx
 	buckets map[string]*bolt.Bucket
 	// txWg protects tx from being rolled back at the end of a batch interval until all reads using this tx are done.
+	// boltdb  的读写不是并行的，进行写之前先保证所有读动作都结束
 	txWg *sync.WaitGroup
 }
 
+// readTx 把 readTx.buf 锁的使用交给了上层，提供的两个 range 函数是 unsafe 的。
 func (rt *readTx) Lock()    { rt.mu.Lock() }
 func (rt *readTx) Unlock()  { rt.mu.Unlock() }
 func (rt *readTx) RLock()   { rt.mu.RLock() }
@@ -100,11 +106,14 @@ func (rt *readTx) UnsafeRange(bucketName, key, endKey []byte, limit int64) ([][]
 }
 
 func (rt *readTx) UnsafeForEach(bucketName []byte, visitor func(k, v []byte) error) error {
+    // block1：标识在 rt.buf 中存在的 kv，并存入 map dups 中
+	// 标识 rt.buf 中存在的数据
 	dups := make(map[string]struct{})
 	getDups := func(k, v []byte) error {
 		dups[string(k)] = struct{}{}
 		return nil
 	}
+	// 如果 rt.buf 中存在该 kv，则先不访问
 	visitNoDup := func(k, v []byte) error {
 		if _, ok := dups[string(k)]; ok {
 			return nil
@@ -114,12 +123,16 @@ func (rt *readTx) UnsafeForEach(bucketName []byte, visitor func(k, v []byte) err
 	if err := rt.buf.ForEach(bucketName, getDups); err != nil {
 		return err
 	}
+
+	// block2: 遍历 boltdb 中的 kv，但是 rt.buf 中存在的，先不访问
 	rt.txMu.Lock()
 	err := unsafeForEach(rt.tx, bucketName, visitNoDup)
 	rt.txMu.Unlock()
 	if err != nil {
 		return err
 	}
+
+	// block3: 访问 rt.buf 中的 kv
 	return rt.buf.ForEach(bucketName, visitor)
 }
 
@@ -131,6 +144,7 @@ func (rt *readTx) reset() {
 }
 
 // TODO: create a base type for readTx and concurrentReadTx to avoid duplicated function implementation?
+// concurrentReadTx 是每次读单独使用，使用完毕即销毁，所以对其 buf 不用加锁
 type concurrentReadTx struct {
 	buf     txReadBuffer
 	txMu    *sync.RWMutex

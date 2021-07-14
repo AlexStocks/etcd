@@ -160,7 +160,7 @@ func (wp *watchProxy) Watch(stream pb.Watch_WatchServer) (err error) {
 	}
 }
 
-// watchProxyStream forwards etcd watch events to a proxied client stream.
+// watchProxyStream forwards etcd watch events to a proxy client stream.
 type watchProxyStream struct {
 	ranges *watchRanges
 
@@ -171,7 +171,7 @@ type watchProxyStream struct {
 	// nextWatcherID is the id to assign the next watcher on this stream.
 	nextWatcherID int64
 
-	stream pb.Watch_WatchServer
+	stream pb.Watch_WatchServer // client
 
 	// watchCh receives watch responses from the watchers.
 	watchCh chan *pb.WatchResponse

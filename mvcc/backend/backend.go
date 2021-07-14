@@ -82,6 +82,8 @@ type Snapshot interface {
 	Close() error
 }
 
+// backend 主要是在 boltdb 上层做了一些优化，加入了 buffer+batch 的概念，batch 用来优化吞吐，
+// buffer 则用来保证 batch 过程中的安全性：在 batch 过程中先去最新的 batch 中读取数据，然后再去 boltdb 中读取。
 type backend struct {
 	// size and commits are used with atomic operations so they must be
 	// 64-bit aligned, otherwise 32-bit tests will crash
@@ -95,14 +97,16 @@ type backend struct {
 	// openReadTxN is the number of currently open read transactions in the backend
 	openReadTxN int64
 
+	// 该读写锁用读锁来同步读并发，使用写锁保证写唯一执行。
+	// 具体来说，就是同步 ReadTx 读句柄和 BatchTx 写句柄，每次 commit 过后，ReadTx 需要切换到最新的 readview。
 	mu sync.RWMutex
 	db *bolt.DB
 
 	batchInterval time.Duration
 	batchLimit    int
-	batchTx       *batchTxBuffered
+	batchTx       *batchTxBuffered // 写接口
 
-	readTx *readTx
+	readTx *readTx  // 读接口
 
 	stopc chan struct{}
 	donec chan struct{}
@@ -315,6 +319,7 @@ func (b *backend) SizeInUse() int64 {
 	return atomic.LoadInt64(&b.sizeInUse)
 }
 
+// 定时定量地执行 commit
 func (b *backend) run() {
 	defer close(b.donec)
 	t := time.NewTimer(b.batchInterval)

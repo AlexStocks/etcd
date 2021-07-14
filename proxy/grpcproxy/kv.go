@@ -22,6 +22,7 @@ import (
 	"go.etcd.io/etcd/proxy/grpcproxy/cache"
 )
 
+// kvProxy 就是对 v3 etcd client 和一个 range 请求 cache 的封装
 type kvProxy struct {
 	kv    clientv3.KV
 	cache cache.Cache

@@ -31,11 +31,16 @@ var (
 	ErrCompacted      = rpctypes.ErrGRPCCompacted
 )
 
+// 缓存客户端请求
 type Cache interface {
+	// 添加客户端请求到缓存中
 	Add(req *pb.RangeRequest, resp *pb.RangeResponse)
+	// 从缓存中获取请求的响应结果
 	Get(req *pb.RangeRequest) (*pb.RangeResponse, error)
 	Compact(revision int64)
+	// 判断缓存是否失效
 	Invalidate(key []byte, endkey []byte)
+	// 缓存的长度
 	Size() int
 	Close()
 }
@@ -63,9 +68,11 @@ func (c *cache) Close() {}
 // cache implements Cache
 type cache struct {
 	mu  sync.RWMutex
+	// 客户端请求的缓存，算法当然是最近最少使用
 	lru *lru.Cache
 
 	// a reverse index for cache invalidation
+	// 线段树，缓存 range 查询
 	cachedRanges adt.IntervalTree
 
 	compactedRev int64
@@ -78,11 +85,13 @@ func (c *cache) Add(req *pb.RangeRequest, resp *pb.RangeResponse) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// 只有请求的资源的版本号有效，才会缓存请求
 	if req.Revision > c.compactedRev {
 		c.lru.Add(key, resp)
 	}
 	// we do not need to invalidate a request with a revision specified.
 	// so we do not need to add it into the reverse index.
+	// 请求资源的 revision 不为零，又比 c.compactedRev 小，则返回
 	if req.Revision != 0 {
 		return
 	}
@@ -100,9 +109,11 @@ func (c *cache) Add(req *pb.RangeRequest, resp *pb.RangeResponse) {
 	iv = c.cachedRanges.Find(ivl)
 
 	if iv == nil {
+		// 第一次，生成 value，然后加入 cachedRanges 中
 		val := map[string]struct{}{key: {}}
 		c.cachedRanges.Insert(ivl, val)
 	} else {
+		// 添加
 		val := iv.Val.(map[string]struct{})
 		val[key] = struct{}{}
 		iv.Val = val

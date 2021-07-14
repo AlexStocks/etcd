@@ -56,6 +56,7 @@ func (w *watcher) send(wr clientv3.WatchResponse) {
 	if wr.IsProgressNotify() && !w.progress {
 		return
 	}
+	// 如果 rsp 的版本号无效，则返回
 	if w.nextrev > wr.Header.Revision && len(wr.Events) > 0 {
 		return
 	}
@@ -78,6 +79,7 @@ func (w *watcher) send(wr clientv3.WatchResponse) {
 			lastRev = ev.Kv.ModRevision
 		}
 
+		// 过滤 rsp.events
 		filtered := false
 		for _, filter := range w.filters {
 			if filter(*ev) {
@@ -119,9 +121,11 @@ func (w *watcher) send(wr clientv3.WatchResponse) {
 
 // post puts a watch response on the watcher's proxy stream channel
 func (w *watcher) post(wr *pb.WatchResponse) bool {
+	timeout := time.NewTimer(50 * time.Millisecond)
 	select {
 	case w.wps.watchCh <- wr:
-	case <-time.After(50 * time.Millisecond):
+		timeout.Stop()
+	case <- timeout.C:
 		w.wps.cancel()
 		return false
 	}

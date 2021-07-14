@@ -14,3 +14,6 @@
 
 // Package backend defines a standard interface for etcd's backend MVCC storage.
 package backend
+
+// backend 整体执行的是读写分离的逻辑，有关于读的接口都在 read_tx.go readTx & concurrentReadTx。
+// 有关于写的接口则是在 batch_tx.go batchTxBuffered 中。
